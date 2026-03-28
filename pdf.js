@@ -2,7 +2,7 @@ const pdfjsPath = path => `/vendor/pdfjs/${path}`
 
 import '@pdfjs/pdf.min.mjs'
 const pdfjsLib = globalThis.pdfjsLib
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsPath('pdf.worker.min.mjs')
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsPath('pdf.worker.mjs')
 
 const fetchText = async url => await (await fetch(url)).text()
 
@@ -316,30 +316,36 @@ const makeTOCItem = async (item, pdf) => {
 
 const MAX_CACHED_PAGES = 8
 
-export const makePDF = async file => {
+export const makePDF = async (file, options = {}) => {
+    const { perf } = options
+    const time = (name, fn, detail) =>
+        perf?.tracker?.time?.(name, fn, detail) ?? fn()
     const transport = new pdfjsLib.PDFDataRangeTransport(file.size, [])
     transport.requestDataRange = (begin, end) => {
         file.slice(begin, end).arrayBuffer().then(chunk => {
             transport.onDataRange(begin, chunk)
         })
     }
-    const pdf = await pdfjsLib.getDocument({
+    const pdf = await time('pdf:getDocument', () => pdfjsLib.getDocument({
         range: transport,
         wasmUrl: pdfjsPath(''),
         cMapUrl: pdfjsPath('cmaps/'),
         standardFontDataUrl: pdfjsPath('standard_fonts/'),
         isEvalSupported: false,
-    }).promise
+    }).promise, { backend: perf?.backend, size: file.size })
 
     // Get viewport dimensions from first page for fixed-layout rendering
-    const firstPage = await pdf.getPage(1)
+    const firstPage = await time('pdf:firstPage', () => pdf.getPage(1), {
+        backend: perf?.backend,
+    })
     const firstViewport = firstPage.getViewport({ scale: 1 })
     const book = { rendition: {
         layout: 'pre-paginated',
         viewport: { width: firstViewport.width, height: firstViewport.height },
     } }
 
-    const { metadata, info } = await pdf.getMetadata() ?? {}
+    const { metadata, info } = await time('pdf:getMetadata', () =>
+        pdf.getMetadata(), { backend: perf?.backend }) ?? {}
     // TODO: for better results, parse `metadata.getRaw()`
     book.metadata = {
         title: metadata?.get('dc:title') ?? info?.Title,
@@ -354,7 +360,9 @@ export const makePDF = async file => {
         rights: metadata?.get('dc:rights'),
     }
 
-    const outline = await pdf.getOutline()
+    const outline = await time('pdf:getOutline', () => pdf.getOutline(), {
+        backend: perf?.backend,
+    })
     book.toc = outline ? await Promise.all(outline.map(item => makeTOCItem(item, pdf))) : null
 
     const cache = new Map()

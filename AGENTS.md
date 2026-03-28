@@ -21,7 +21,9 @@
 - [`rollup/`](/Users/dev/workspace2/hc_apps/foliate-js/rollup): vendor 构建入口。
 - [`vendor/`](/Users/dev/workspace2/hc_apps/foliate-js/vendor): 构建产物和第三方分发文件，通常应由构建流程更新，不要手改压缩后的 vendor 文件。
 - [`tests/`](/Users/dev/workspace2/hc_apps/foliate-js/tests): 轻量测试壳和浏览器端测试文件。
+- [`PERF_BENCHMARK.md`](/Users/dev/workspace2/hc_apps/foliate-js/PERF_BENCHMARK.md): Phase 0 自动性能测试说明、场景 DSL、稳定性规则和 baseline 工作流。
 - [`tutorials/commit/`](/Users/dev/workspace2/hc_apps/foliate-js/tutorials/commit): 每个非平凡 commit 的中文教程。
+- [`TODOS.md`](/Users/dev/workspace2/hc_apps/foliate-js/TODOS.md): 已确认延期但值得保留上下文的后续工作。
 
 ## 常用命令
 
@@ -29,6 +31,7 @@
 - 构建 vendor 产物: `npm run build`
 - 查看当前改动: `git status --short`
 - 浏览器测试壳: 打开 [`tests/tests.html`](/Users/dev/workspace2/hc_apps/foliate-js/tests/tests.html)
+- 自动 benchmark 说明: 先读 [`PERF_BENCHMARK.md`](/Users/dev/workspace2/hc_apps/foliate-js/PERF_BENCHMARK.md)
 - 本地 demo: 启动任意静态文件服务器后访问 [`reader.html`](/Users/dev/workspace2/hc_apps/foliate-js/reader.html)
 
 ## 开发原则
@@ -38,6 +41,7 @@
 - DRY 很重要，但只在证据充分时抽共性。这个仓库的格式路径差异很大，过早统一通常会制造假抽象。
 - 优先保持书籍接口、渲染器接口、demo 可用性和浏览器兼容性。
 - 性能工作必须同时关心时间、内存、复制成本和可解释性，不能只贴一张“更快了”的图。
+- 改 benchmark、场景 DSL、稳定性门槛、baseline 工作流前，先读 [`PERF_BENCHMARK.md`](/Users/dev/workspace2/hc_apps/foliate-js/PERF_BENCHMARK.md)；不要绕开这份文档各写各的。
 - 先复用已有能力。比如现有 `rollup.config.js` 的 vendor 复制模式、现有 loader 入口、现有 `tests/` 壳子，除非它们明确挡路。
 
 ## 代码约定
@@ -143,8 +147,10 @@ Not included:
 ## 参考资料
 
 - [`README.md`](/Users/dev/workspace2/hc_apps/foliate-js/README.md)
+- [`PERF_BENCHMARK.md`](/Users/dev/workspace2/hc_apps/foliate-js/PERF_BENCHMARK.md)
 - [`rollup.config.js`](/Users/dev/workspace2/hc_apps/foliate-js/rollup.config.js)
 - [`tests/tests.html`](/Users/dev/workspace2/hc_apps/foliate-js/tests/tests.html)
+- [`TODOS.md`](/Users/dev/workspace2/hc_apps/foliate-js/TODOS.md)
 
 ## 子目录约定
 

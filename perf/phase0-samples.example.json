@@ -1,0 +1,6 @@
+{
+  "targets": [
+    "/absolute/path/to/book.epub",
+    "/absolute/path/to/book.pdf"
+  ]
+}

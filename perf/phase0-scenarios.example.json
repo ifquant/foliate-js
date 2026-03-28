@@ -1,0 +1,48 @@
+{
+  "open-index": {
+    "name": "open-index",
+    "steps": []
+  },
+  "continuous-reading": {
+    "name": "continuous-reading",
+    "viewport": {
+      "width": 1200,
+      "height": 1600
+    },
+    "steps": [
+      { "action": "openView" },
+      { "action": "initView", "showTextStart": true },
+      { "action": "next", "count": 3 },
+      { "action": "prev", "count": 1 },
+      { "action": "jumpPrimary", "offset": 1 }
+    ]
+  },
+  "toc-jump": {
+    "name": "toc-jump",
+    "viewport": {
+      "width": 1200,
+      "height": 1600
+    },
+    "steps": [
+      { "action": "openView" },
+      { "action": "initView", "showTextStart": true },
+      { "action": "jumpOutline", "index": 0 },
+      { "action": "next", "count": 2 }
+    ]
+  },
+  "jump-and-return": {
+    "name": "jump-and-return",
+    "viewport": {
+      "width": 1200,
+      "height": 1600
+    },
+    "steps": [
+      { "action": "openView" },
+      { "action": "initView", "showTextStart": true },
+      { "action": "jumpPrimary", "offset": 1 },
+      { "action": "returnContext" },
+      { "action": "jumpSecondary" },
+      { "action": "returnContext" }
+    ]
+  }
+}

@@ -78,49 +78,73 @@ const fetchFile = async url => {
     return new File([await res.blob()], new URL(res.url).pathname)
 }
 
-export const makeBook = async file => {
+export const makeBook = async (file, options = {}) => {
+    const { perf } = options
+    const time = (name, fn, detail) =>
+        perf?.tracker?.time?.(name, fn, detail) ?? fn()
+    const mark = (name, detail) => perf?.tracker?.mark?.(name, detail)
     if (typeof file === 'string') file = await fetchFile(file)
+    mark('makeBook:start', { name: file?.name, size: file?.size, type: file?.type })
     let book
     if (file.isDirectory) {
-        const loader = await makeDirectoryLoader(file)
+        const loader = await time('makeBook:directoryLoader', () =>
+            makeDirectoryLoader(file), { backend: perf?.backend })
         const { EPUB } = await import('./epub.js')
-        book = await new EPUB(loader).init()
+        book = await time('makeBook:directoryEPUB', () =>
+            new EPUB({ ...loader, perf }).init(), { backend: perf?.backend })
     }
     else if (!file.size) throw new NotFoundError('File not found')
-    else if (await isZip(file)) {
-        const loader = await makeZipLoader(file)
+    else if (await time('makeBook:isZip', () => isZip(file))) {
+        const loader = await time('makeBook:zipLoader', () => makeZipLoader(file), {
+            backend: perf?.backend,
+        })
         if (isCBZ(file)) {
             const { makeComicBook } = await import('./comic-book.js')
-            book = makeComicBook(loader, file)
+            book = await time('makeBook:comicBook', () =>
+                makeComicBook(loader, file), { backend: perf?.backend })
         }
         else if (isFBZ(file)) {
             const { makeFB2 } = await import('./fb2.js')
             const { entries } = loader
             const entry = entries.find(entry => entry.filename.endsWith('.fb2'))
-            const blob = await loader.loadBlob((entry ?? entries[0]).filename)
-            book = await makeFB2(blob)
+            const blob = await time('makeBook:fbzBlob', () =>
+                loader.loadBlob((entry ?? entries[0]).filename), { backend: perf?.backend })
+            book = await time('makeBook:fbz', () => makeFB2(blob), { backend: perf?.backend })
         }
         else {
             const { EPUB } = await import('./epub.js')
-            book = await new EPUB(loader).init()
+            book = await time('makeBook:zipEPUB', () =>
+                new EPUB({ ...loader, perf }).init(), { backend: perf?.backend })
         }
     }
-    else if (await isPDF(file)) {
+    else if (await time('makeBook:isPDF', () => isPDF(file))) {
         const { makePDF } = await import('./pdf.js')
-        book = await makePDF(file)
+        book = await time('makeBook:pdf', () => makePDF(file, { perf }), {
+            backend: perf?.backend,
+        })
     }
     else {
         const { isMOBI, MOBI } = await import('./mobi.js')
-        if (await isMOBI(file)) {
+        if (await time('makeBook:isMOBI', () => isMOBI(file))) {
             const fflate = await import('./vendor/fflate.js')
-            book = await new MOBI({ unzlib: fflate.unzlibSync }).open(file)
+            book = await time('makeBook:mobi', () =>
+                new MOBI({ unzlib: fflate.unzlibSync }).open(file), {
+                backend: perf?.backend,
+            })
         }
         else if (isFB2(file)) {
             const { makeFB2 } = await import('./fb2.js')
-            book = await makeFB2(file)
+            book = await time('makeBook:fb2', () => makeFB2(file), {
+                backend: perf?.backend,
+            })
         }
     }
     if (!book) throw new UnsupportedTypeError('File type not supported')
+    mark('makeBook:complete', {
+        backend: perf?.backend,
+        title: book.metadata?.title,
+        layout: book.rendition?.layout ?? 'reflowable',
+    })
     return book
 }
 

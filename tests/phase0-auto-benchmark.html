@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Phase 0 Auto Benchmark</title>
+<script type="importmap">
+{
+  "imports": {
+    "@pdfjs/pdf.min.mjs": "/vendor/pdfjs/pdf.mjs",
+    "construct-style-sheets-polyfill": "/__deps__/construct-style-sheets-polyfill.js"
+  }
+}
+</script>
+<script type="module">
+import { makeBook } from '../view.js'
+import { createBackendController } from '../perf/backend-controller.js'
+import { createPhaseTracker } from '../perf/phase-tracker.js'
+
+const params = new URLSearchParams(location.search)
+const target = params.get('target')
+const label = params.get('label') ?? target
+const primary = params.get('backend') ?? 'js'
+const fallback = params.get('fallback') ?? 'js'
+const iterations = Number.parseInt(params.get('iterations') ?? '1', 10)
+const warmupIterations = Number.parseInt(params.get('warmup') ?? '0', 10)
+const scenario = JSON.parse(params.get('scenario') ?? '{"name":"open-index","steps":[]}')
+const samplePath = new URL(target, location.href).searchParams.get('path') ?? target
+const sampleName = decodeURIComponent(samplePath.split('/').pop() || label || 'sample')
+const isPDFSample = sampleName.toLowerCase().endsWith('.pdf')
+
+let sampleFilePromise
+
+const createRemotePDFFile = async () => {
+    const response = await fetch(target, { method: 'HEAD' })
+    if (!response.ok) throw new Error(`Failed to probe sample: ${response.status} ${response.statusText}`)
+    const size = Number.parseInt(response.headers.get('content-length') ?? '', 10)
+    const type = response.headers.get('content-type') ?? 'application/pdf'
+    return {
+        name: sampleName,
+        type,
+        size,
+        slice(begin = 0, end = size) {
+            return {
+                async arrayBuffer() {
+                    const rangeEnd = Math.max(begin, end - 1)
+                    const ranged = await fetch(target, {
+                        headers: { range: `bytes=${begin}-${rangeEnd}` },
+                    })
+                    if (!ranged.ok && ranged.status !== 206)
+                        throw new Error(`Failed to fetch range: ${ranged.status} ${ranged.statusText}`)
+                    return await ranged.arrayBuffer()
+                },
+            }
+        },
+    }
+}
+
+const loadSampleFile = async () => {
+    if (!sampleFilePromise) sampleFilePromise = (async () => {
+        if (isPDFSample) return await createRemotePDFFile()
+        const response = await fetch(target)
+        if (!response.ok) throw new Error(`Failed to fetch sample: ${response.status} ${response.statusText}`)
+        const blob = await response.blob()
+        return new File([blob], sampleName, { type: blob.type })
+    })()
+    return await sampleFilePromise
+}
+
+const postResult = async result => {
+    await fetch('/__result__', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(result),
+    })
+}
+
+const captureUASpecificMemorySnapshot = async stage => {
+    const measure = performance.measureUserAgentSpecificMemory?.bind(performance)
+    const at = performance.now()
+    if (typeof measure !== 'function') return {
+        supported: false,
+        stage,
+        at,
+        reason: 'performance.measureUserAgentSpecificMemory unavailable',
+    }
+    try {
+        const result = await measure()
+        return {
+            supported: true,
+            stage,
+            at,
+            bytes: Number.isFinite(result?.bytes) ? result.bytes : null,
+            breakdownCount: Array.isArray(result?.breakdown) ? result.breakdown.length : 0,
+        }
+    } catch (error) {
+        return {
+            supported: false,
+            stage,
+            at,
+            reason: error instanceof Error ? error.message : String(error),
+        }
+    }
+}
+
+const captureHeapSnapshot = stage => {
+    const heap = performance.memory
+    const at = performance.now()
+    if (!heap) return {
+        supported: false,
+        stage,
+        at,
+        reason: 'performance.memory unavailable',
+    }
+    const usedJSHeapSize = heap.usedJSHeapSize
+    const totalJSHeapSize = heap.totalJSHeapSize
+    const jsHeapSizeLimit = heap.jsHeapSizeLimit
+    if (![usedJSHeapSize, totalJSHeapSize, jsHeapSizeLimit].every(Number.isFinite)) return {
+        supported: false,
+        stage,
+        at,
+        reason: 'performance.memory incomplete',
+    }
+    return {
+        supported: true,
+        stage,
+        at,
+        usedJSHeapSize,
+        totalJSHeapSize,
+        jsHeapSizeLimit,
+    }
+}
+
+const heapDelta = (from, to) => from?.supported && to?.supported
+    ? to.usedJSHeapSize - from.usedJSHeapSize
+    : null
+
+const bytesDelta = (from, to) => from?.supported
+    && to?.supported
+    && Number.isFinite(from.bytes)
+    && Number.isFinite(to.bytes)
+    ? to.bytes - from.bytes
+    : null
+
+const summarizeActionMemory = (before, after) => ({
+    supported: Boolean(before?.supported && after?.supported),
+    before,
+    after,
+    deltaUsedJSHeapSize: heapDelta(before, after),
+})
+
+const summarizeRunMemory = ({
+    start,
+    end,
+    afterDestroy,
+    actionResults,
+    uaStart,
+    uaEnd,
+    uaAfterDestroy,
+}) => {
+    const supportedValues = [
+        start,
+        end,
+        afterDestroy,
+        ...actionResults.flatMap(action => [action.memory?.before, action.memory?.after]),
+    ].filter(snapshot => snapshot?.supported && Number.isFinite(snapshot.usedJSHeapSize))
+    const peakUsedJSHeapSize = supportedValues.length
+        ? Math.max(...supportedValues.map(snapshot => snapshot.usedJSHeapSize))
+        : null
+    return {
+        supported: Boolean(start?.supported && end?.supported),
+        start,
+        end,
+        afterDestroy,
+        snapshotCount: supportedValues.length,
+        peakUsedJSHeapSize,
+        peakDeltaUsedJSHeapSize: start?.supported && Number.isFinite(peakUsedJSHeapSize)
+            ? peakUsedJSHeapSize - start.usedJSHeapSize
+            : null,
+        heapDeltaUsedJSHeapSize: heapDelta(start, end),
+        postDestroyDeltaUsedJSHeapSize: heapDelta(start, afterDestroy),
+        userAgentSpecific: {
+            supported: Boolean(uaStart?.supported && uaEnd?.supported),
+            start: uaStart,
+            end: uaEnd,
+            afterDestroy: uaAfterDestroy,
+            bytesDelta: bytesDelta(uaStart, uaEnd),
+            postDestroyBytesDelta: bytesDelta(uaStart, uaAfterDestroy),
+        },
+    }
+}
+
+const settleAfterDestroy = async () => {
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => requestAnimationFrame(() => resolve()))
+}
+
+const settleViewAction = async (view, timeout = 400) => {
+    const renderer = view?.renderer
+    if (!renderer?.addEventListener) {
+        await settleAfterDestroy()
+        return
+    }
+
+    let timer
+    await Promise.race([
+        new Promise(resolve => {
+            const done = () => {
+                clearTimeout(timer)
+                renderer.removeEventListener?.('stabilized', onStabilized)
+                renderer.removeEventListener?.('relocate', onRelocate)
+                resolve()
+            }
+            const onStabilized = () => done()
+            const onRelocate = () => done()
+            renderer.addEventListener('stabilized', onStabilized, { once: true })
+            renderer.addEventListener('relocate', onRelocate, { once: true })
+            timer = setTimeout(done, timeout)
+        }),
+        new Promise(resolve => setTimeout(resolve, timeout)),
+    ])
+
+    await new Promise(resolve => requestAnimationFrame(() => resolve()))
+    await new Promise(resolve => requestAnimationFrame(() => resolve()))
+}
+
+const flattenTOC = items => {
+    const flat = []
+    const walk = list => {
+        for (const item of list ?? []) {
+            flat.push(item)
+            walk(item.subitems)
+        }
+    }
+    walk(items)
+    return flat
+}
+
+const resolvePrimaryTargetIndex = (book, currentIndex, offset = 1) => {
+    const direction = offset >= 0 ? 1 : -1
+    let steps = Math.max(1, Math.abs(offset))
+    let index = currentIndex
+
+    while (steps > 0) {
+        let next = index + direction
+        while (next >= 0 && next < book.sections.length) {
+            if (book.sections[next]?.linear !== 'no') break
+            next += direction
+        }
+        if (next < 0 || next >= book.sections.length) return index
+        index = next
+        steps -= 1
+    }
+
+    return index
+}
+
+const createBenchmarkView = viewport => {
+    const view = document.createElement('foliate-view')
+    const width = viewport?.width ?? 1200
+    const height = viewport?.height ?? 1600
+    Object.assign(view.style, {
+        position: 'fixed',
+        left: '-20000px',
+        top: '0',
+        width: `${width}px`,
+        height: `${height}px`,
+        opacity: '0',
+        pointerEvents: 'none',
+    })
+    document.body.append(view)
+    return view
+}
+
+const runOnce = async iteration => {
+    const tracker = createPhaseTracker({ enabled: true })
+    const controller = createBackendController({ tracker })
+    const sampleFile = await loadSampleFile()
+    const actionResults = []
+    const runStartHeap = captureHeapSnapshot('run:start')
+    const runStartUAMemory = await captureUASpecificMemorySnapshot('run:start')
+    const timedAction = async (name, fn, detail = {}, settle = null) => {
+        const startedAt = performance.now()
+        const memoryBefore = captureHeapSnapshot(`${name}:before`)
+        const value = await tracker.time(`scenario:${name}`, fn, detail)
+        if (settle) await settle()
+        const memoryAfter = captureHeapSnapshot(`${name}:after`)
+        actionResults.push({
+            name,
+            duration: performance.now() - startedAt,
+            detail,
+            memory: summarizeActionMemory(memoryBefore, memoryAfter),
+        })
+        return value
+    }
+    const load = async backend => {
+        if (backend === 'wasm') throw new Error('Phase 0 uses JS fallback only')
+        return tracker.time('makeBook', () => makeBook(sampleFile, {
+            perf: { tracker, backend },
+        }), { backend, target, size: sampleFile.size })
+    }
+    const startedAt = performance.now()
+    let book
+    let view
+    let returnContext = null
+    let outcome
+    let runEndHeap
+    let runEndUAMemory
+    try {
+        book = await timedAction('makeBook', () =>
+            controller.run({ primary, fallback, load }), {
+            backend: primary,
+            scenario: scenario.name,
+        })
+
+        const captureReturnContext = () => ({
+            index: view?.renderer?.primaryIndex ?? 0,
+        })
+
+        const runStep = async step => {
+            switch (step.action) {
+                case 'openView':
+                    if (!view) view = createBenchmarkView(scenario.viewport)
+                    await timedAction('openView', () => view.open(book), step,
+                        () => settleViewAction(view))
+                    return
+                case 'initView':
+                    if (!view) throw new Error('initView requires openView first')
+                    await timedAction('initView', () => view.init({
+                        lastLocation: step.lastLocation,
+                        showTextStart: step.showTextStart ?? true,
+                    }), step, () => settleViewAction(view))
+                    return
+                case 'next':
+                    if (!view) throw new Error('next requires openView first')
+                    for (let index = 0; index < (step.count ?? 1); index++)
+                        await timedAction('next', () => view.next(step.distance), {
+                            ...step,
+                            turn: index + 1,
+                        }, () => settleViewAction(view))
+                    return
+                case 'prev':
+                    if (!view) throw new Error('prev requires openView first')
+                    for (let index = 0; index < (step.count ?? 1); index++)
+                        await timedAction('prev', () => view.prev(step.distance), {
+                            ...step,
+                            turn: index + 1,
+                        }, () => settleViewAction(view))
+                    return
+                case 'jumpSection': {
+                    if (!view) throw new Error('jumpSection requires openView first')
+                    const current = view.renderer?.primaryIndex ?? 0
+                    const offset = step.offset ?? 1
+                    const targetIndex = Math.max(0,
+                        Math.min(book.sections.length - 1, current + offset))
+                    await timedAction('jumpSection', () => view.goTo(targetIndex), {
+                        ...step,
+                        current,
+                        targetIndex,
+                    }, () => settleViewAction(view))
+                    return
+                }
+                case 'jumpPrimary': {
+                    if (!view) throw new Error('jumpPrimary requires openView first')
+                    const current = view.renderer?.primaryIndex ?? 0
+                    const offset = step.offset ?? 1
+                    const targetIndex = resolvePrimaryTargetIndex(book, current, offset)
+                    returnContext = captureReturnContext()
+                    await timedAction('jumpPrimary', () => view.goTo(targetIndex), {
+                        ...step,
+                        current,
+                        targetIndex,
+                        resolvedAs: book.rendition?.layout === 'pre-paginated' ? 'page' : 'section',
+                    }, () => settleViewAction(view))
+                    return
+                }
+                case 'jumpSecondary': {
+                    if (!view) throw new Error('jumpSecondary requires openView first')
+                    const current = view.renderer?.primaryIndex ?? 0
+                    const items = flattenTOC(book.toc)
+                    const outlineItem = items[Math.min(step.index ?? 1, Math.max(items.length - 1, 0))]
+                    returnContext = captureReturnContext()
+                    if (outlineItem?.href) {
+                        await timedAction('jumpSecondary', () => view.goTo(outlineItem.href), {
+                            ...step,
+                            href: outlineItem.href,
+                            resolvedAs: 'outline',
+                        }, () => settleViewAction(view))
+                        return
+                    }
+                    const offset = step.offset ?? 2
+                    const targetIndex = resolvePrimaryTargetIndex(book, current, offset)
+                    await timedAction('jumpSecondary', () => view.goTo(targetIndex), {
+                        ...step,
+                        current,
+                        targetIndex,
+                        resolvedAs: book.rendition?.layout === 'pre-paginated' ? 'page' : 'section',
+                    }, () => settleViewAction(view))
+                    return
+                }
+                case 'jumpToc': {
+                    if (!view) throw new Error('jumpToc requires openView first')
+                    const items = flattenTOC(book.toc)
+                    const tocItem = items[Math.min(step.index ?? 0, Math.max(items.length - 1, 0))]
+                    if (!tocItem?.href) throw new Error('jumpToc could not find a TOC href')
+                    await timedAction('jumpToc', () => view.goTo(tocItem.href), {
+                        ...step,
+                        href: tocItem.href,
+                    }, () => settleViewAction(view))
+                    return
+                }
+                case 'jumpOutline': {
+                    if (!view) throw new Error('jumpOutline requires openView first')
+                    const items = flattenTOC(book.toc)
+                    const outlineItem = items[Math.min(step.index ?? 0, Math.max(items.length - 1, 0))]
+                    if (!outlineItem?.href) throw new Error('jumpOutline could not find an outline href')
+                    returnContext = captureReturnContext()
+                    await timedAction('jumpOutline', () => view.goTo(outlineItem.href), {
+                        ...step,
+                        href: outlineItem.href,
+                        resolvedAs: 'outline',
+                    }, () => settleViewAction(view))
+                    return
+                }
+                case 'returnContext': {
+                    if (!view) throw new Error('returnContext requires openView first')
+                    const target = returnContext ?? captureReturnContext()
+                    await timedAction('returnContext', () => view.goTo(target.index), {
+                        ...step,
+                        targetIndex: target.index,
+                        resolvedAs: book.rendition?.layout === 'pre-paginated' ? 'page' : 'section',
+                    }, () => settleViewAction(view))
+                    return
+                }
+                case 'firstSectionDocument': {
+                    const firstSection = book.sections.find(section => section.linear !== 'no')
+                        ?? book.sections[0]
+                    if (!firstSection?.createDocument) throw new Error('firstSectionDocument unavailable')
+                    await timedAction('firstSectionDocument', () => firstSection.createDocument(), step)
+                    return
+                }
+                default:
+                    throw new Error(`Unknown scenario action: ${step.action}`)
+            }
+        }
+
+        for (const step of scenario.steps ?? [])
+            await runStep(step)
+
+        const endedAt = performance.now()
+        runEndHeap = captureHeapSnapshot('run:end')
+        runEndUAMemory = await captureUASpecificMemorySnapshot('run:end')
+        outcome = {
+            ok: true,
+            iteration,
+            totalDuration: endedAt - startedAt,
+            scenario: scenario.name,
+            actions: actionResults,
+            backendStates: controller.states,
+            phases: tracker.snapshot(),
+            summary: {
+                title: book.metadata?.title ?? null,
+                sections: book.sections?.length ?? 0,
+                toc: book.toc?.length ?? 0,
+                rendition: book.rendition?.layout ?? 'reflowable',
+                currentIndex: view?.renderer?.primaryIndex ?? null,
+            },
+            memory: summarizeRunMemory({
+                start: runStartHeap,
+                end: runEndHeap,
+                afterDestroy: null,
+                actionResults,
+                uaStart: runStartUAMemory,
+                uaEnd: runEndUAMemory,
+                uaAfterDestroy: null,
+            }),
+        }
+    } catch (error) {
+        runEndHeap = captureHeapSnapshot('run:error')
+        runEndUAMemory = await captureUASpecificMemorySnapshot('run:error')
+        outcome = {
+            ok: false,
+            iteration,
+            totalDuration: null,
+            scenario: scenario.name,
+            actions: actionResults,
+            backendStates: controller.states,
+            phases: tracker.snapshot(),
+            memory: summarizeRunMemory({
+                start: runStartHeap,
+                end: runEndHeap,
+                afterDestroy: null,
+                actionResults,
+                uaStart: runStartUAMemory,
+                uaEnd: runEndUAMemory,
+                uaAfterDestroy: null,
+            }),
+            error: error instanceof Error ? {
+                message: error.message,
+                stack: error.stack,
+            } : String(error),
+        }
+    } finally {
+        try {
+            view?.close?.()
+            view?.remove?.()
+        } catch {}
+        try {
+            await book?.destroy?.()
+        } catch {}
+        await settleAfterDestroy()
+        const afterDestroyHeap = captureHeapSnapshot('run:afterDestroy')
+        const afterDestroyUAMemory = await captureUASpecificMemorySnapshot('run:afterDestroy')
+        if (outcome) outcome.memory = summarizeRunMemory({
+            start: outcome.memory?.start ?? runStartHeap,
+            end: outcome.memory?.end ?? runEndHeap ?? captureHeapSnapshot('run:end'),
+            afterDestroy: afterDestroyHeap,
+            actionResults,
+            uaStart: outcome.memory?.userAgentSpecific?.start ?? runStartUAMemory,
+            uaEnd: outcome.memory?.userAgentSpecific?.end ?? runEndUAMemory ?? await captureUASpecificMemorySnapshot('run:end'),
+            uaAfterDestroy: afterDestroyUAMemory,
+        })
+    }
+    return outcome
+}
+
+const benchmark = async () => {
+    for (let index = 0; index < warmupIterations; index++)
+        await runOnce(`warmup-${index + 1}`)
+    const runs = []
+    for (let index = 0; index < iterations; index++)
+        runs.push(await runOnce(index + 1))
+    return {
+        ok: runs.every(result => result.ok),
+        label,
+        target,
+        primary,
+        fallback,
+        scenario: scenario.name,
+        iterations,
+        warmupIterations,
+        runs,
+    }
+}
+
+try {
+    const result = await benchmark()
+    document.body.textContent = JSON.stringify(result, null, 2)
+    await postResult(result)
+} catch (error) {
+    const result = {
+        ok: false,
+        label,
+        target,
+        primary,
+        fallback,
+        scenario: scenario.name,
+        iterations,
+        warmupIterations,
+        error: error instanceof Error ? {
+            message: error.message,
+            stack: error.stack,
+        } : String(error),
+    }
+    document.body.textContent = JSON.stringify(result, null, 2)
+    await postResult(result)
+}
+</script>

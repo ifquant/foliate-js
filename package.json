@@ -28,7 +28,12 @@
     "rollup": "^4.22.4"
   },
   "scripts": {
-    "build": "npx rollup -c"
+    "build": "npx rollup -c",
+    "bench:phase0": "node scripts/run-phase0-benchmark.mjs",
+    "bench:phase0:baseline": "node scripts/run-phase0-benchmark.mjs --samples perf/phase0-samples.local.json --cases js --scenario continuous-reading --warmup 2 --runs 5 --trim 1 --max-cv 0.12 --max-range 0.25 --output perf/results/phase0-baseline-continuous.json",
+    "bench:phase0:all": "node scripts/run-phase0-benchmark.mjs --samples perf/phase0-samples.local.json --scenario continuous-reading --warmup 2 --runs 10 --trim 1 --max-cv 0.12 --max-range 0.25 --output perf/results/phase0-latest.json",
+    "bench:phase0:outline": "node scripts/run-phase0-benchmark.mjs --samples perf/phase0-samples.local.json --scenario outline-heavy --warmup 1 --runs 5 --trim 1 --max-cv 0.12 --max-range 0.25 --output perf/results/phase0-outline.json",
+    "bench:phase0:jumps": "node scripts/run-phase0-benchmark.mjs --samples perf/phase0-samples.local.json --scenario jump-and-return --warmup 1 --runs 5 --trim 1 --max-cv 0.12 --max-range 0.25 --output perf/results/phase0-jumps.json"
   },
   "keywords": [
     "ebook",

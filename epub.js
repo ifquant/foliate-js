@@ -1017,7 +1017,8 @@ export class EPUB {
     parser = new DOMParser()
     #loader
     #encryption
-    constructor({ entries, loadText, loadBlob, getSize, sha1 }) {
+    #perf
+    constructor({ entries, loadText, loadBlob, getSize, sha1, perf }) {
         this.entries = entries.reduce((map, entry) => {
             map.set(entry.filename, entry)
             return map
@@ -1026,6 +1027,10 @@ export class EPUB {
         this.loadBlob = loadBlob
         this.getSize = getSize
         this.#encryption = new Encryption(deobfuscators(sha1))
+        this.#perf = perf
+    }
+    #time(name, fn, detail) {
+        return this.#perf?.tracker?.time?.(name, fn, detail) ?? fn()
     }
     #sanitizeXMLEntities(str) {
         // Common HTML entities that aren't valid in XML
@@ -1049,17 +1054,25 @@ export class EPUB {
         })
     }
     async #loadXML(uri) {
-        const str = await this.loadText(uri)
+        const backend = this.#perf?.backend
+        const str = await this.#time('epub:loadText', () => this.loadText(uri), {
+            backend,
+            uri,
+        })
         if (!str) return null
-        const sanitized = this.#sanitizeXMLEntities(str)
-        const doc = this.parser.parseFromString(sanitized, MIME.XML)
+        const sanitized = await this.#time('epub:sanitizeXML', () =>
+            this.#sanitizeXMLEntities(str), { backend, uri })
+        const doc = await this.#time('epub:parseXML', () =>
+            this.parser.parseFromString(sanitized, MIME.XML), { backend, uri })
         if (doc.querySelector('parsererror'))
             throw new Error(`XML parsing error: ${uri}
 ${doc.querySelector('parsererror').innerText}`)
         return doc
     }
     async init() {
-        const $container = await this.#loadXML('META-INF/container.xml')
+        const backend = this.#perf?.backend
+        const $container = await this.#time('epub:container', () =>
+            this.#loadXML('META-INF/container.xml'), { backend })
         if (!$container) throw new Error('Failed to load container file')
 
         const opfs = Array.from(
@@ -1069,16 +1082,21 @@ ${doc.querySelector('parsererror').innerText}`)
 
         if (!opfs.length) throw new Error('No package document defined in container')
         const opfPath = opfs[0].fullPath
-        const opf = await this.#loadXML(opfPath)
+        const opf = await this.#time('epub:opf', () => this.#loadXML(opfPath), {
+            backend,
+            opfPath,
+        })
         if (!opf) throw new Error('Failed to load package document')
 
-        const $encryption = await this.#loadXML('META-INF/encryption.xml')
-        await this.#encryption.init($encryption, opf)
+        const $encryption = await this.#time('epub:encryptionXML', () =>
+            this.#loadXML('META-INF/encryption.xml'), { backend })
+        await this.#time('epub:encryptionInit', () =>
+            this.#encryption.init($encryption, opf), { backend })
 
-        this.resources = new Resources({
+        this.resources = await this.#time('epub:resources', () => new Resources({
             opf,
             resolveHref: url => resolveURL(url, opfPath),
-        })
+        }), { backend })
         this.#loader = new Loader({
             loadText: this.loadText,
             loadBlob: uri => Promise.resolve(this.loadBlob(uri))
@@ -1087,7 +1105,8 @@ ${doc.querySelector('parsererror').innerText}`)
             entries: this.entries,
         })
         this.transformTarget = this.#loader.eventTarget
-        this.sections = this.resources.spine.map((spineItem, index) => {
+        this.sections = await this.#time('epub:sections', () =>
+            this.resources.spine.map((spineItem, index) => {
             const { idref, linear, properties = [] } = spineItem
             const item = this.resources.getItemByID(idref)
             if (!item) {
@@ -1110,12 +1129,16 @@ ${doc.querySelector('parsererror').innerText}`)
                 mediaOverlay: item.mediaOverlay
                     ? this.resources.getItemByID(item.mediaOverlay) : null,
             }
-        }).filter(s => s)
+        }).filter(s => s), { backend })
 
         const { navPath, ncxPath } = this.resources
         if (navPath) try {
             const resolve = url => resolveURL(url, navPath)
-            const nav = parseNav(await this.#loadXML(navPath), resolve)
+            const nav = await this.#time('epub:nav', async () =>
+                parseNav(await this.#loadXML(navPath), resolve), {
+                backend,
+                navPath,
+            })
             this.toc = nav.toc
             this.pageList = nav.pageList
             this.landmarks = nav.landmarks
@@ -1124,25 +1147,32 @@ ${doc.querySelector('parsererror').innerText}`)
         }
         if (!this.toc && ncxPath) try {
             const resolve = url => resolveURL(url, ncxPath)
-            const ncx = parseNCX(await this.#loadXML(ncxPath), resolve)
+            const ncx = await this.#time('epub:ncx', async () =>
+                parseNCX(await this.#loadXML(ncxPath), resolve), {
+                backend,
+                ncxPath,
+            })
             this.toc = ncx.toc
             this.pageList = ncx.pageList
         } catch(e) {
             console.warn(e)
         }
 
-        await this.#updateSubItems()
+        await this.#time('epub:updateSubItems', () => this.#updateSubItems(), { backend })
 
         this.landmarks ??= this.resources.guide
 
-        const { metadata, rendition, media } = getMetadata(opf)
+        const { metadata, rendition, media } = await this.#time('epub:metadata', () =>
+            getMetadata(opf), { backend })
         this.metadata = metadata
         this.rendition = rendition
         this.media = media
         this.dir = this.resources.pageProgressionDirection
-        const displayOptions = getDisplayOptions(
-            await this.#loadXML('META-INF/com.apple.ibooks.display-options.xml')
-            ?? await this.#loadXML('META-INF/com.kobobooks.display-options.xml'))
+        const displayOptions = await this.#time('epub:displayOptions', async () =>
+            getDisplayOptions(
+                await this.#loadXML('META-INF/com.apple.ibooks.display-options.xml')
+                ?? await this.#loadXML('META-INF/com.kobobooks.display-options.xml')
+            ), { backend })
         if (displayOptions) {
             if (displayOptions.fixedLayout === 'true')
                 this.rendition.layout ??= 'pre-paginated'

@@ -1,1 +1,4 @@
 node_modules/
+.gstack/
+perf/results/
+perf/*.local.json
