@@ -19,6 +19,7 @@ const target = params.get('target')
 const label = params.get('label') ?? target
 const primary = params.get('backend') ?? 'js'
 const fallback = params.get('fallback') ?? 'js'
+const turnSettle = params.get('turnSettle') ?? null
 const iterations = Number.parseInt(params.get('iterations') ?? '1', 10)
 const warmupIterations = Number.parseInt(params.get('warmup') ?? '0', 10)
 const scenario = JSON.parse(params.get('scenario') ?? '{"name":"open-index","steps":[]}')
@@ -318,6 +319,7 @@ const runOnce = async iteration => {
             switch (step.action) {
                 case 'openView':
                     if (!view) view = createBenchmarkView(scenario.viewport)
+                    if (turnSettle) view.setAttribute('turn-settle', turnSettle)
                     await timedAction('openView', () => view.open(book), step,
                         () => settleViewAction(view))
                     return

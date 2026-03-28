@@ -97,7 +97,7 @@ const usage = () => {
     console.error([
         'Usage:',
         '  node scripts/run-phase0-benchmark.mjs <absolute-or-relative-file-path> [...]',
-        '  node scripts/run-phase0-benchmark.mjs --samples perf/phase0-samples.local.json [--warmup 2] [--runs 10] [--trim 1] [--cases js,wasmFallback] [--output perf/results/phase0-latest.json] [--baseline perf/results/phase0-baseline.json] [--threshold 0.15] [--max-cv 0.12] [--max-range 0.25]',
+        '  node scripts/run-phase0-benchmark.mjs --samples perf/phase0-samples.local.json [--warmup 2] [--runs 10] [--trim 1] [--cases js,wasmFallback] [--turn-settle legacy|frame] [--output perf/results/phase0-latest.json] [--baseline perf/results/phase0-baseline.json] [--threshold 0.15] [--max-cv 0.12] [--max-range 0.25]',
         'Scenarios:',
         '  open-index | continuous-reading | outline-heavy | jump-and-return',
     ].join('\n'))
@@ -118,6 +118,7 @@ const parseArgs = argv => {
         scenario: 'continuous-reading',
         scenarioFile: null,
         caseKeys: caseConfigs.map(config => config.key),
+        turnSettle: 'legacy',
     }
     for (let index = 0; index < argv.length; index++) {
         const value = argv[index]
@@ -132,6 +133,7 @@ const parseArgs = argv => {
         else if (value === '--max-range') options.maxRange = Number.parseFloat(argv[++index] ?? '')
         else if (value === '--scenario') options.scenario = argv[++index] ?? null
         else if (value === '--scenario-file') options.scenarioFile = argv[++index] ?? null
+        else if (value === '--turn-settle') options.turnSettle = argv[++index] ?? null
         else if (value === '--cases') {
             options.caseKeys = (argv[++index] ?? '')
                 .split(',')
@@ -150,6 +152,7 @@ if ((!options.paths.length && !options.samplesPath)
     || !Number.isFinite(options.trimCount) || options.trimCount < 0
     || !Number.isFinite(options.maxCv) || options.maxCv <= 0
     || !Number.isFinite(options.maxRange) || options.maxRange <= 0
+    || !['legacy', 'frame'].includes(options.turnSettle)
     || !options.caseKeys.length) {
     usage()
     process.exit(1)
@@ -667,7 +670,7 @@ const runCase = async ({
     const stepCount = scenario.steps?.length ?? 0
     const totalIterations = iterations + warmup
     const timeoutMs = Math.max(120000, 30000 + totalIterations * (20000 + stepCount * 5000))
-    const url = `http://127.0.0.1:${server.address().port}${benchmarkPath}?target=${encodeURIComponent(sampleUrl)}&label=${encodeURIComponent(label)}&backend=${caseConfig.backend}&fallback=${caseConfig.fallback}&iterations=${iterations}&warmup=${warmup}&scenario=${encodeURIComponent(JSON.stringify(scenario))}`
+    const url = `http://127.0.0.1:${server.address().port}${benchmarkPath}?target=${encodeURIComponent(sampleUrl)}&label=${encodeURIComponent(label)}&backend=${caseConfig.backend}&fallback=${caseConfig.fallback}&turnSettle=${encodeURIComponent(options.turnSettle)}&iterations=${iterations}&warmup=${warmup}&scenario=${encodeURIComponent(JSON.stringify(scenario))}`
     const browser = spawn(chromePath, [
         '--headless=new',
         '--disable-gpu',
@@ -828,6 +831,7 @@ const benchmarkTarget = async (targetPath, scenario) => {
         label,
         measurementMode: 'batched-page',
         scenario: scenario.name,
+        turnSettle: options.turnSettle,
         cases: Object.fromEntries(activeCaseConfigs.map(config => [config.key,
             normalizeCaseResult(caseResults[config.key]) ])),
     }
@@ -878,6 +882,7 @@ const buildSummary = targets => targets.map(target => ({
     type: target.type,
     measurementMode: target.measurementMode,
     scenario: target.scenario,
+    turnSettle: target.turnSettle,
     cases: Object.fromEntries(activeCaseConfigs.map(config => {
         const stats = target.cases[config.key]?.stats ?? {}
         return [config.key, {
@@ -912,6 +917,7 @@ server.listen(0, '127.0.0.1', async () => {
             repoRoot,
             chromePath,
             scenario: scenario.name,
+            turnSettle: options.turnSettle,
             cases: activeCaseConfigs.map(config => config.key),
             runsPerCase: options.runs,
             warmupRunsPerCase: options.warmupRuns,

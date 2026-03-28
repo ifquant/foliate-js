@@ -1,3 +1,4 @@
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const nextFrame = () => new Promise(resolve =>
     requestAnimationFrame(() => resolve()))
 
@@ -2134,7 +2135,14 @@ export class Paginator extends HTMLElement {
         for (let index = fromIndex + dir; this.#canGoToIndex(index); index += dir)
             if (this.sections[index]?.linear !== 'no') return index
     }
+    get turnSettleMode() {
+        return this.getAttribute('turn-settle') === 'frame' ? 'frame' : 'legacy'
+    }
     async #waitForTurnSettle(shouldGo) {
+        if (this.turnSettleMode !== 'frame') {
+            if (shouldGo || !this.hasAttribute('animated')) await wait(100)
+            return
+        }
         // Animated same-section turns already await animateScroll().
         // Only keep a small unlock delay for non-animated turns or
         // section transitions so relocate/stabilized observers flush.

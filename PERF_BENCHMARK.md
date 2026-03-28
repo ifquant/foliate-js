@@ -14,6 +14,23 @@
 - 为后续 EPUB / PDF / MOBI 的性能优化建立基线
 - 避免把 runner 噪声、冷启动抖动、静默 fallback 或错误动作序列误判成真实性能变化
 
+## 优化开关原则
+
+性能优化默认不应该直接替换旧逻辑，尤其是阅读器层这种容易带来时序副作用的路径。当前 benchmark 已经把 `turn-settle` 做成显式开关：
+
+- `legacy`
+  - 默认值
+  - 保留原来的 `turnPage` 固定 `100ms` 稳定窗口
+- `frame`
+  - 实验值
+  - 把固定等待改成更短的帧级稳定窗口
+
+这样做的目的不是永久维护两套行为，而是先把高风险优化纳入可控实验面：
+
+- 可以用同一套样本和场景比较 `legacy` 与 `frame`
+- 出现副作用时可以快速回退到旧逻辑
+- 在副作用验证完成前，不必直接替换默认行为
+
 ## 适用范围
 
 当前 Phase 0 benchmark 已覆盖：
@@ -188,6 +205,28 @@ node scripts/run-phase0-benchmark.mjs \
   --scenario continuous-reading
 ```
 
+### 指定 turn-settle 模式
+
+默认是 `legacy`。如果要显式测新的翻页稳定窗口：
+
+```bash
+node scripts/run-phase0-benchmark.mjs \
+  --samples perf/phase0-samples.local.json \
+  --cases js \
+  --scenario continuous-reading \
+  --turn-settle frame
+```
+
+如果要明确回到旧逻辑，也可以显式写：
+
+```bash
+node scripts/run-phase0-benchmark.mjs \
+  --samples perf/phase0-samples.local.json \
+  --cases js \
+  --scenario continuous-reading \
+  --turn-settle legacy
+```
+
 ## 场景系统
 
 ### 命名场景
@@ -254,6 +293,7 @@ node scripts/run-phase0-benchmark.mjs \
 - `trim=1`
 - `maxCv=0.12`
 - `maxRange=0.25`
+- `turnSettle=legacy`
 
 含义：
 
@@ -297,6 +337,7 @@ node scripts/run-phase0-benchmark.mjs \
 - `median`
 - `stable`
 - `stabilityFailures`
+- `turnSettle`
 - `memory.medianPeakUsedJSHeapSize`
 - `memory.medianHeapDeltaUsedJSHeapSize`
 - `memory.medianPostDestroyDeltaUsedJSHeapSize`
@@ -370,6 +411,24 @@ node scripts/run-phase0-benchmark.mjs \
 如果你在看 PDF 或固定布局路径，这三层放在一起看会更有意义。
 
 其中 `processTree.steadyState` 比 `processTree` 整体值更值得看，因为它尽量剔除了 Chrome 冷启动阶段。
+
+### turnSettle 字段怎么理解
+
+结果里的 `turnSettle` 表示这组数据是用哪一种翻页稳定窗口跑出来的：
+
+- `legacy`
+  - 保留历史逻辑
+  - 适合当前默认基线
+- `frame`
+  - 启用实验优化
+  - 更适合对照实验，不应该在未验证副作用前直接替换基线
+
+如果你在做 `paginator` 性能改动，对比结果时至少要同时看：
+
+- `scenario`
+- `turnSettle`
+- `actions`
+- `monitoring.processTree.steadyState`
 
 ### backendStates 的意义
 
@@ -453,6 +512,7 @@ node scripts/run-phase0-benchmark.mjs \
 - benchmark 仍依赖本地 Chrome 和本地样本
 - 当前内存指标来自 `performance.memory` 和 `measureUserAgentSpecificMemory()`，都属于浏览器近似值，不是完整进程内存
 - 不同机器之间的数据只能做参考，不能直接混成一套统一结论
+- `turn-settle=frame` 目前仍是实验优化开关，是否值得提升为默认行为要看更多样本和副作用验证
 
 ## 修改 benchmark 前先看什么
 

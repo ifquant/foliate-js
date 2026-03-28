@@ -285,6 +285,8 @@ export class View extends HTMLElement {
             this.renderer = document.createElement('foliate-paginator')
         }
         this.renderer.setAttribute('exportparts', 'head,foot,filter,container')
+        const turnSettle = this.getAttribute('turn-settle')
+        if (turnSettle != null) this.renderer.setAttribute('turn-settle', turnSettle)
         this.renderer.addEventListener('load', e => this.#onLoad(e.detail))
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
         this.renderer.addEventListener('create-overlayer', e =>
