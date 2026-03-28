@@ -256,7 +256,7 @@ export class View extends HTMLElement {
         })
     }
     #forwardRendererAttributes() {
-        for (const name of ['turn-settle', 'flow', 'animated', 'eink']) {
+        for (const name of ['turn-settle', 'flow', 'animated', 'eink', 'animation-duration']) {
             if (this.hasAttribute(name)) this.renderer.setAttribute(name, this.getAttribute(name) ?? '')
         }
     }

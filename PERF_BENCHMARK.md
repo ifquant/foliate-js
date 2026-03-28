@@ -233,6 +233,8 @@ node scripts/run-phase0-benchmark.mjs \
 
 - `--animated`
   - 打开分页动画
+- `--animation-duration 100`
+  - 设置动画时长，默认 `100ms`
 - `--flow scrolled`
   - 切到滚动模式
 - `--eink`
@@ -246,6 +248,7 @@ node scripts/run-phase0-benchmark.mjs \
   --cases js \
   --scenario continuous-reading \
   --animated \
+  --animation-duration 300 \
   --turn-settle legacy
 
 node scripts/run-phase0-benchmark.mjs \
@@ -253,6 +256,7 @@ node scripts/run-phase0-benchmark.mjs \
   --cases js \
   --scenario continuous-reading \
   --animated \
+  --animation-duration 100 \
   --turn-settle frame
 ```
 
@@ -265,6 +269,24 @@ node scripts/run-phase0-benchmark.mjs \
   --scenario continuous-reading \
   --flow scrolled \
   --turn-settle frame
+```
+
+如果你只想验证动画时长本身，而不切换 `turn-settle`，也可以直接对比：
+
+```bash
+node scripts/run-phase0-benchmark.mjs \
+  /absolute/path/to/book.epub \
+  --cases js \
+  --scenario continuous-reading \
+  --animated \
+  --animation-duration 300
+
+node scripts/run-phase0-benchmark.mjs \
+  /absolute/path/to/book.epub \
+  --cases js \
+  --scenario continuous-reading \
+  --animated \
+  --animation-duration 100
 ```
 
 ## 场景系统
@@ -381,6 +403,7 @@ node scripts/run-phase0-benchmark.mjs \
 - `flow`
 - `animated`
 - `eink`
+- `animationDuration`
 - `memory.medianPeakUsedJSHeapSize`
 - `memory.medianHeapDeltaUsedJSHeapSize`
 - `memory.medianPostDestroyDeltaUsedJSHeapSize`

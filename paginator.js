@@ -1,6 +1,7 @@
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const nextFrame = () => new Promise(resolve =>
     requestAnimationFrame(() => resolve()))
+const DEFAULT_ANIMATION_DURATION = 100
 
 const debounce = (f, wait, immediate) => {
     let timeout
@@ -1624,7 +1625,7 @@ export class Paginator extends HTMLElement {
                 this.scrollProp,
                 startPosition,
                 offset,
-                300,
+                this.animationDuration,
             ).then(() => {
                 this.#isAnimating = false
                 this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
@@ -2137,6 +2138,10 @@ export class Paginator extends HTMLElement {
     }
     get turnSettleMode() {
         return this.getAttribute('turn-settle') === 'frame' ? 'frame' : 'legacy'
+    }
+    get animationDuration() {
+        const value = Number.parseInt(this.getAttribute('animation-duration') ?? '', 10)
+        return Number.isFinite(value) && value >= 0 ? value : DEFAULT_ANIMATION_DURATION
     }
     async #waitForTurnSettle(shouldGo) {
         if (this.turnSettleMode !== 'frame') {

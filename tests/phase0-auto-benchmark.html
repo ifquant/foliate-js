@@ -23,6 +23,7 @@ const turnSettle = params.get('turnSettle') ?? null
 const flow = params.get('flow') ?? null
 const animated = params.get('animated') === '1'
 const eink = params.get('eink') === '1'
+const animationDuration = params.get('animationDuration') ?? null
 const iterations = Number.parseInt(params.get('iterations') ?? '1', 10)
 const warmupIterations = Number.parseInt(params.get('warmup') ?? '0', 10)
 const scenario = JSON.parse(params.get('scenario') ?? '{"name":"open-index","steps":[]}')
@@ -281,6 +282,8 @@ const applyViewBenchmarkAttributes = view => {
     else view.removeAttribute('animated')
     if (eink) view.setAttribute('eink', '')
     else view.removeAttribute('eink')
+    if (animationDuration) view.setAttribute('animation-duration', animationDuration)
+    else view.removeAttribute('animation-duration')
 }
 
 const runOnce = async iteration => {
@@ -479,6 +482,7 @@ const runOnce = async iteration => {
                 flow: view?.renderer?.getAttribute?.('flow') ?? null,
                 animated: view?.renderer?.hasAttribute?.('animated') ?? false,
                 eink: view?.renderer?.hasAttribute?.('eink') ?? false,
+                animationDuration: view?.renderer?.getAttribute?.('animation-duration') ?? null,
                 turnSettle,
             },
             memory: summarizeRunMemory({
