@@ -278,6 +278,7 @@ class View {
     #contentPages = 0
     #bgImageSize = null
     fontReady = Promise.resolve()
+    perfTracker = null
     constructor({ container, onExpand }) {
         this.container = container
         this.onExpand = onExpand
@@ -332,55 +333,62 @@ class View {
     }
     async load(src, data, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
-        return new Promise(resolve => {
-            this.#iframe.addEventListener('load', () => {
-                const doc = this.document
-                afterLoad?.(doc)
-
-                this.#iframe.setAttribute('aria-label', doc.title)
-                // it needs to be visible for Firefox to get computed style
-                this.#iframe.style.display = 'block'
-                const { vertical, rtl } = getDirection(doc)
-                this.docBackground = getBackground(doc)
-                doc.body.style.background = 'none'
-                // Preload background image to get natural dimensions;
-                // in scrolled mode the view expands to fit the image.
-                const bgUrl = this.docBackground
-                    ?.match(/url\(["']?([^"')]+)["']?\)/)?.[1]
-                if (bgUrl) {
-                    const img = new Image()
-                    img.onload = () => {
-                        this.#bgImageSize = {
-                            width: img.naturalWidth,
-                            height: img.naturalHeight,
-                        }
-                        if (!this.#column) this.expand()
-                    }
-                    img.src = bgUrl
-                }
-                this.#iframe.style.display = 'none'
-
-                this.#vertical = vertical
-                this.#rtl = rtl
-
-                this.#contentRange.selectNodeContents(doc.body)
-                const layout = beforeRender?.({ vertical, rtl })
-                this.#iframe.style.display = 'block'
-                this.render(layout)
-                this.#observer.observe(doc.body)
-
-                // the resize observer above doesn't work in Firefox
-                // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
-                // until the bug is fixed we can at least account for font load
-                this.fontReady = doc.fonts.ready.then(() => this.expand())
-
-                resolve()
-            }, { once: true })
+        const time = (name, fn, detail) =>
+            this.perfTracker?.time?.(name, fn, detail) ?? fn()
+        await time('renderer:view:iframeLoadWait', () => new Promise(resolve => {
+            this.#iframe.addEventListener('load', resolve, { once: true })
             if (data) {
                 this.#iframe.srcdoc = data
             } else {
                 this.#iframe.src = src
             }
+        }))
+        const doc = this.document
+        await time('renderer:view:afterLoadHooks', () => {
+            afterLoad?.(doc)
+        })
+
+        let vertical = false
+        let rtl = false
+        await time('renderer:view:prepareDocument', () => {
+            this.#iframe.setAttribute('aria-label', doc.title)
+            // it needs to be visible for Firefox to get computed style
+            this.#iframe.style.display = 'block'
+            ;({ vertical, rtl } = getDirection(doc))
+            this.docBackground = getBackground(doc)
+            doc.body.style.background = 'none'
+            // Preload background image to get natural dimensions;
+            // in scrolled mode the view expands to fit the image.
+            const bgUrl = this.docBackground
+                ?.match(/url\(["']?([^"')]+)["']?\)/)?.[1]
+            if (bgUrl) {
+                const img = new Image()
+                img.onload = () => {
+                    this.#bgImageSize = {
+                        width: img.naturalWidth,
+                        height: img.naturalHeight,
+                    }
+                    if (!this.#column) this.expand()
+                }
+                img.src = bgUrl
+            }
+            this.#iframe.style.display = 'none'
+        })
+
+        this.#vertical = vertical
+        this.#rtl = rtl
+
+        await time('renderer:view:renderSetup', () => {
+            this.#contentRange.selectNodeContents(doc.body)
+            const layout = beforeRender?.({ vertical, rtl })
+            this.#iframe.style.display = 'block'
+            this.render(layout)
+            this.#observer.observe(doc.body)
+
+            // the resize observer above doesn't work in Firefox
+            // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
+            // until the bug is fixed we can at least account for font load
+            this.fontReady = doc.fonts.ready.then(() => this.expand())
         })
     }
     render(layout) {
@@ -818,6 +826,7 @@ export class Paginator extends HTMLElement {
     #fillPromise = null // tracks in-progress #fillVisibleArea for awaiting
     #stabilizing = false // true while #display is stabilizing layout
     #rendered = false // true after first #display completes
+    perfTracker = null
     constructor() {
         super()
         this.#root.innerHTML = `<style>
@@ -1146,6 +1155,7 @@ export class Paginator extends HTMLElement {
                     this.#scrollToAnchor(this.#anchor)
             },
         })
+        view.perfTracker = this.perfTracker
         this.#views.set(index, view)
         const sorted = this.#sortedViews
         const myPos = sorted.findIndex(([i]) => i === index)
@@ -1828,6 +1838,8 @@ export class Paginator extends HTMLElement {
         this.dispatchEvent(new CustomEvent('relocate', { detail }))
     }
     async #display(promise) {
+        const time = (name, fn, detail) =>
+            this.perfTracker?.time?.(name, fn, detail) ?? fn()
         this.#stabilizing = true
         this.#container.style.opacity = '0'
         const { index, src, data, anchor, onLoad, select } = await promise
@@ -1848,7 +1860,8 @@ export class Paginator extends HTMLElement {
                 onLoad?.({ doc, index })
             }
             const beforeRender = this.#beforeRender.bind(this)
-            await view.load(src, data, afterLoad, beforeRender)
+            await time('renderer:display:loadPrimary', () =>
+                view.load(src, data, afterLoad, beforeRender), { index })
             this.dispatchEvent(new CustomEvent('create-overlayer', {
                 detail: {
                     doc: view.document, index,
@@ -1864,24 +1877,30 @@ export class Paginator extends HTMLElement {
         if (!this.noPreload && !this.noContinuousScroll && primaryView) {
             const needsPrev = (primaryView.contentPages > 0 && primaryView.contentPages < this.columnCount)
             if (needsPrev || this.scrolled) {
-                const sorted = this.#sortedViews
-                const firstIndex = sorted[0]?.[0]
-                if (firstIndex != null) {
-                    const prevIdx = this.#adjacentIndex(-1, firstIndex)
-                    if (prevIdx != null) {
-                        await this.#loadAdjacentSection(prevIdx)
+                await time('renderer:display:preloadPrevious', async () => {
+                    const sorted = this.#sortedViews
+                    const firstIndex = sorted[0]?.[0]
+                    if (firstIndex != null) {
+                        const prevIdx = this.#adjacentIndex(-1, firstIndex)
+                        if (prevIdx != null) {
+                            await this.#loadAdjacentSection(prevIdx)
+                        }
                     }
-                }
+                }, { index, scrolled: this.scrolled, needsPrev })
             }
-            this.#updateViewPadding()
+            await time('renderer:display:updatePadding', () => {
+                this.#updateViewPadding()
+            }, { index })
         }
         const resolvedAnchor = (typeof anchor === 'function'
             ? anchor(primaryView.document) : anchor) ?? 0
-        await this.scrollToAnchor(resolvedAnchor, select)
+        await time('renderer:display:scrollToAnchor', () =>
+            this.scrollToAnchor(resolvedAnchor, select), { index })
         if (hasFocus) this.focusView()
         // Reveal content now that primary section is positioned
         this.#container.style.opacity = '1'
         this.#rendered = true
+        this.perfTracker?.mark?.('renderer:display:revealed', { index })
         // Emit stabilized so listeners can react, but keep #stabilizing
         // true until fill completes to prevent the debounced scroll
         // handler from loading backward sections during rapid DOM changes.
@@ -1889,8 +1908,8 @@ export class Paginator extends HTMLElement {
         // Load remaining adjacent sections progressively (non-blocking).
         // In scrolled mode, skip reanchor — browser scroll anchoring
         // preserves position when content is added above/below.
-        this.#fillPromise = this.#fillVisibleArea(
-            { reanchor: !this.scrolled })
+        this.#fillPromise = time('renderer:display:fillVisibleArea', () =>
+            this.#fillVisibleArea({ reanchor: !this.scrolled }), { index, scrolled: this.scrolled })
         this.#fillPromise.then(() => { this.#stabilizing = false })
     }
     // Load an adjacent section without changing primary index

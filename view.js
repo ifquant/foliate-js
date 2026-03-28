@@ -290,6 +290,7 @@ export class View extends HTMLElement {
             this.renderer = document.createElement('foliate-paginator')
         }
         this.renderer.setAttribute('exportparts', 'head,foot,filter,container')
+        this.renderer.perfTracker = this.perfTracker ?? null
         this.#forwardRendererAttributes()
         this.renderer.addEventListener('load', e => this.#onLoad(e.detail))
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
@@ -340,9 +341,10 @@ export class View extends HTMLElement {
         this.mediaOverlay = null
     }
     goToTextStart() {
-        return this.goTo(this.book.landmarks
+        const textLandmark = this.book.landmarks
             ?.find(m => m.type.includes('bodymatter') || m.type.includes('text'))
-            ?.href ?? this.book.sections.findIndex(s => s.linear !== 'no'))
+        if (textLandmark?.href) return this.goTo(textLandmark.href)
+        return this.goTo(this.book.sections.findIndex(s => s.linear !== 'no'))
     }
     async init({ lastLocation, showTextStart }) {
         const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null

@@ -335,6 +335,7 @@ const runOnce = async iteration => {
             switch (step.action) {
                 case 'openView':
                     if (!view) view = createBenchmarkView(scenario.viewport)
+                    view.perfTracker = tracker
                     applyViewBenchmarkAttributes(view)
                     await timedAction('openView', () => view.open(book), step,
                         () => settleViewAction(view))

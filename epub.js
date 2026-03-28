@@ -748,15 +748,20 @@ class Loader {
     #cacheXHTMLContent = new Map()
     #children = new Map()
     #refCount = new Map()
+    #perf
     eventTarget = new EventTarget()
-    constructor({ loadText, loadBlob, resources, entries }) {
+    constructor({ loadText, loadBlob, resources, entries, perf }) {
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.manifest = resources.manifest
         this.assets = resources.manifest
         this.entries = entries
+        this.#perf = perf
         // needed only when replacing in (X)HTML w/o parsing (see below)
         //.filter(({ mediaType }) => ![MIME.XHTML, MIME.HTML].includes(mediaType))
+    }
+    #time(name, fn, detail) {
+        return this.#perf?.tracker?.time?.(name, fn, detail) ?? fn()
     }
     async createURL(href, data, type, parent) {
         if (!data) return ''
@@ -810,6 +815,7 @@ class Loader {
     async loadItem(item, parents = []) {
         if (!item) return null
         const { href, mediaType } = item
+        const backend = this.#perf?.backend
 
         const isScript = MIME.JS.test(item.mediaType)
         const detail = { type: mediaType, href, isScript, allow: true}
@@ -826,14 +832,18 @@ class Loader {
             (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
             // prevent circular references
             && parents.every(p => p !== href)
-        if (shouldReplace) return this.loadReplaced(item, parents)
+        if (shouldReplace) return this.#time('epub:loader:loadReplaced', () =>
+            this.loadReplaced(item, parents), { backend, href, mediaType, depth: parents.length })
         // NOTE: this can be replaced with `Promise.try()`
         const tryLoadBlob = Promise.resolve().then(() => this.loadBlob(href))
         return this.createURL(href, tryLoadBlob, mediaType, parent)
     }
     async loadItemXHTMLContent(item, parents = []) {
-        const url = await this.loadItem(item, parents)
-        if (url) return this.#cacheXHTMLContent.get(url)?.data
+        const backend = this.#perf?.backend
+        return this.#time('epub:section:loadContent', async () => {
+            const url = await this.loadItem(item, parents)
+            if (url) return this.#cacheXHTMLContent.get(url)?.data
+        }, { backend, href: item?.href, depth: parents.length })
     }
     tryImageEntryItem(path) {
         if (!IMAGE_EXTENSIONS.some(ext => path.toLowerCase().endsWith(`.${ext}`))) {
@@ -877,9 +887,11 @@ class Loader {
     async loadReplaced(item, parents = []) {
         const { href, mediaType } = item
         const parent = parents.at(-1)
+        const backend = this.#perf?.backend
         let str = ''
         try {
-            str = await this.loadText(href)
+            str = await this.#time('epub:loader:loadText', () =>
+                this.loadText(href), { backend, href, mediaType, depth: parents.length })
         } catch (e) {
             return this.createURL(href, Promise.reject(e), mediaType, parent)
         }
@@ -896,61 +908,82 @@ class Loader {
 
         // parse and replace in HTML
         if ([MIME.XHTML, MIME.HTML, MIME.SVG].includes(mediaType)) {
-            let doc = new DOMParser().parseFromString(str, mediaType)
+            let doc = await this.#time('epub:loader:parseMarkup', () =>
+                new DOMParser().parseFromString(str, mediaType), {
+                backend, href, mediaType, depth: parents.length,
+            })
             // change to HTML if it's not valid XHTML
             if (mediaType === MIME.XHTML && (doc.querySelector('parsererror')
             || !doc.documentElement?.namespaceURI)) {
                 console.warn(doc.querySelector('parsererror')?.innerText ?? 'Invalid XHTML')
                 item.mediaType = MIME.HTML
-                doc = new DOMParser().parseFromString(str, item.mediaType)
+                doc = await this.#time('epub:loader:parseMarkupFallback', () =>
+                    new DOMParser().parseFromString(str, item.mediaType), {
+                    backend, href, mediaType: item.mediaType, depth: parents.length,
+                })
             }
             // replace hrefs in XML processing instructions
             // this is mainly for SVGs that use xml-stylesheet
-            if ([MIME.XHTML, MIME.SVG].includes(item.mediaType)) {
-                let child = doc.firstChild
-                while (child instanceof ProcessingInstruction) {
-                    if (child.data) {
-                        const replacedData = await replaceSeries(child.data,
-                            /(?:^|\s*)(href\s*=\s*['"])([^'"]*)(['"])/i,
-                            (_, p1, p2, p3) => this.loadHref(p2, href, parents)
-                                .then(p2 => `${p1}${p2}${p3}`))
-                        child.replaceWith(doc.createProcessingInstruction(
-                            child.target, replacedData))
+            await this.#time('epub:loader:rewriteMarkupRefs', async () => {
+                if ([MIME.XHTML, MIME.SVG].includes(item.mediaType)) {
+                    let child = doc.firstChild
+                    while (child instanceof ProcessingInstruction) {
+                        if (child.data) {
+                            const replacedData = await replaceSeries(child.data,
+                                /(?:^|\s*)(href\s*=\s*['"])([^'"]*)(['"])/i,
+                                (_, p1, p2, p3) => this.loadHref(p2, href, parents)
+                                    .then(p2 => `${p1}${p2}${p3}`))
+                            child.replaceWith(doc.createProcessingInstruction(
+                                child.target, replacedData))
+                        }
+                        child = child.nextSibling
                     }
-                    child = child.nextSibling
                 }
-            }
-            // replace hrefs (excluding anchors)
-            const replace = async (el, attr) => el.setAttribute(attr,
-                await this.loadHref(el.getAttribute(attr), href, parents))
-            for (const el of doc.querySelectorAll('link[href]')) await replace(el, 'href')
-            for (const el of doc.querySelectorAll('[src]')) await replace(el, 'src')
-            for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
-            for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
-            for (const el of doc.querySelectorAll('[*|href]:not([href])'))
-                el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(
-                    el.getAttributeNS(NS.XLINK, 'href'), href, parents))
-            for (const el of doc.querySelectorAll('[srcset]'))
-                el.setAttribute('srcset', await replaceSeries(el.getAttribute('srcset'),
-                    /(\s*)(.+?)\s*((?:\s[\d.]+[wx])+\s*(?:,|$)|,\s+|$)/g,
-                    (_, p1, p2, p3) => this.loadHref(p2, href, parents)
-                        .then(p2 => `${p1}${p2}${p3}`)))
-            // replace inline styles
-            for (const el of doc.querySelectorAll('style'))
-                if (el.textContent) el.textContent =
-                    await this.replaceCSS(el.textContent, href, parents)
-            for (const el of doc.querySelectorAll('[style]'))
-                el.setAttribute('style',
-                    await this.replaceCSS(el.getAttribute('style'), href, parents))
+                // replace hrefs (excluding anchors)
+                const replace = async (el, attr) => el.setAttribute(attr,
+                    await this.loadHref(el.getAttribute(attr), href, parents))
+                for (const el of doc.querySelectorAll('link[href]')) await replace(el, 'href')
+                for (const el of doc.querySelectorAll('[src]')) await replace(el, 'src')
+                for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
+                for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
+                for (const el of doc.querySelectorAll('[*|href]:not([href])'))
+                    el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(
+                        el.getAttributeNS(NS.XLINK, 'href'), href, parents))
+                for (const el of doc.querySelectorAll('[srcset]'))
+                    el.setAttribute('srcset', await replaceSeries(el.getAttribute('srcset'),
+                        /(\s*)(.+?)\s*((?:\s[\d.]+[wx])+\s*(?:,|$)|,\s+|$)/g,
+                        (_, p1, p2, p3) => this.loadHref(p2, href, parents)
+                            .then(p2 => `${p1}${p2}${p3}`)))
+                // replace inline styles
+                for (const el of doc.querySelectorAll('style'))
+                    if (el.textContent) el.textContent =
+                        await this.replaceCSS(el.textContent, href, parents)
+                for (const el of doc.querySelectorAll('[style]'))
+                    el.setAttribute('style',
+                        await this.replaceCSS(el.getAttribute('style'), href, parents))
+            }, { backend, href, mediaType: item.mediaType, depth: parents.length })
             // TODO: replace inline scripts? probably not worth the trouble
-            const result = new XMLSerializer().serializeToString(doc)
-            return this.createURL(href, result, item.mediaType, parent)
+            const result = await this.#time('epub:loader:serializeMarkup', () =>
+                new XMLSerializer().serializeToString(doc), {
+                backend, href, mediaType: item.mediaType, depth: parents.length,
+            })
+            return this.#time('epub:loader:createMarkupURL', () =>
+                this.createURL(href, result, item.mediaType, parent), {
+                backend, href, mediaType: item.mediaType, depth: parents.length,
+            })
         }
 
-        const result = mediaType === MIME.CSS
-            ? await this.replaceCSS(str, href, parents)
-            : await this.replaceString(str, href, parents)
-        return this.createURL(href, result, mediaType, parent)
+        const result = await this.#time(
+            mediaType === MIME.CSS ? 'epub:loader:replaceCSS' : 'epub:loader:replaceString',
+            () => mediaType === MIME.CSS
+                ? this.replaceCSS(str, href, parents)
+                : this.replaceString(str, href, parents),
+            { backend, href, mediaType, depth: parents.length },
+        )
+        return this.#time('epub:loader:createURL', () =>
+            this.createURL(href, result, mediaType, parent), {
+            backend, href, mediaType, depth: parents.length,
+        })
     }
     async replaceCSS(str, href, parents = []) {
         const replacedUrls = await replaceSeries(str,
@@ -1103,6 +1136,7 @@ ${doc.querySelector('parsererror').innerText}`)
                 .then(this.#encryption.getDecoder(uri)),
             resources: this.resources,
             entries: this.entries,
+            perf: this.#perf,
         })
         this.transformTarget = this.#loader.eventTarget
         this.sections = await this.#time('epub:sections', () =>
