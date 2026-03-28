@@ -1,23 +1,31 @@
 const decoder = new TextDecoder()
 const decode = decoder.decode.bind(decoder)
 
-const concatTypedArray = (a, b) => {
-    const result = new a.constructor(a.length + b.length)
-    result.set(a)
-    result.set(b, a.length)
-    return result
-}
-
 const strcmp = (a, b) => {
     a = a.toLowerCase(), b = b.toLowerCase()
     return a < b ? -1 : a > b ? 1 : 0
 }
 
 class DictZip {
+    static #CACHE_LIMIT = 8
     #chlen
     #chunks
     #compressed
+    #cache = new Map()
     inflate
+    #cacheChunk(index, chunk) {
+        if (this.#cache.has(index)) this.#cache.delete(index)
+        this.#cache.set(index, chunk)
+        if (this.#cache.size > DictZip.#CACHE_LIMIT)
+            this.#cache.delete(this.#cache.keys().next().value)
+        return chunk
+    }
+    async #inflateChunk(index, buf, pos) {
+        const cached = this.#cache.get(index)
+        if (cached) return this.#cacheChunk(index, cached)
+        const chunk = await this.inflate(new Uint8Array(buf, pos, this.#chunks[index][1]))
+        return this.#cacheChunk(index, chunk)
+    }
     async load(file) {
         const header = new DataView(await file.slice(0, 12).arrayBuffer())
         if (header.getUint8(0) !== 31 || header.getUint8(1) !== 139
@@ -56,18 +64,28 @@ class DictZip {
         }
         if (flg & 0b10) offset += 2 // fhcrc
         this.#compressed = file.slice(offset)
+        this.#cache.clear()
     }
     async read(offset, size) {
+        if (size <= 0) return new Uint8Array()
         const chunks = this.#chunks
         const startIndex = Math.trunc(offset / this.#chlen)
-        const endIndex = Math.trunc((offset + size) / this.#chlen)
+        const endIndex = Math.trunc((offset + size - 1) / this.#chlen)
         const buf = await this.#compressed.slice(chunks[startIndex][0],
             chunks[endIndex][0] + chunks[endIndex][1]).arrayBuffer()
-        let arr = new Uint8Array()
+        const inflated = []
+        let totalLength = 0
         for (let pos = 0, i = startIndex; i <= endIndex; i++) {
-            const data = new Uint8Array(buf, pos, chunks[i][1])
-            arr = concatTypedArray(arr, await this.inflate(data))
+            const chunk = await this.#inflateChunk(i, buf, pos)
+            inflated.push(chunk)
+            totalLength += chunk.length
             pos += chunks[i][1]
+        }
+        const arr = new Uint8Array(totalLength)
+        for (let offset = 0, i = 0; i < inflated.length; i++) {
+            const chunk = inflated[i]
+            arr.set(chunk, offset)
+            offset += chunk.length
         }
         const startOffset = offset - startIndex * this.#chlen
         return arr.subarray(startOffset, startOffset + size)
