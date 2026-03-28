@@ -20,6 +20,9 @@ const label = params.get('label') ?? target
 const primary = params.get('backend') ?? 'js'
 const fallback = params.get('fallback') ?? 'js'
 const turnSettle = params.get('turnSettle') ?? null
+const flow = params.get('flow') ?? null
+const animated = params.get('animated') === '1'
+const eink = params.get('eink') === '1'
 const iterations = Number.parseInt(params.get('iterations') ?? '1', 10)
 const warmupIterations = Number.parseInt(params.get('warmup') ?? '0', 10)
 const scenario = JSON.parse(params.get('scenario') ?? '{"name":"open-index","steps":[]}')
@@ -270,6 +273,16 @@ const createBenchmarkView = viewport => {
     return view
 }
 
+const applyViewBenchmarkAttributes = view => {
+    if (turnSettle) view.setAttribute('turn-settle', turnSettle)
+    if (flow) view.setAttribute('flow', flow)
+    else view.removeAttribute('flow')
+    if (animated) view.setAttribute('animated', '')
+    else view.removeAttribute('animated')
+    if (eink) view.setAttribute('eink', '')
+    else view.removeAttribute('eink')
+}
+
 const runOnce = async iteration => {
     const tracker = createPhaseTracker({ enabled: true })
     const controller = createBackendController({ tracker })
@@ -319,7 +332,7 @@ const runOnce = async iteration => {
             switch (step.action) {
                 case 'openView':
                     if (!view) view = createBenchmarkView(scenario.viewport)
-                    if (turnSettle) view.setAttribute('turn-settle', turnSettle)
+                    applyViewBenchmarkAttributes(view)
                     await timedAction('openView', () => view.open(book), step,
                         () => settleViewAction(view))
                     return
@@ -463,6 +476,10 @@ const runOnce = async iteration => {
                 toc: book.toc?.length ?? 0,
                 rendition: book.rendition?.layout ?? 'reflowable',
                 currentIndex: view?.renderer?.primaryIndex ?? null,
+                flow: view?.renderer?.getAttribute?.('flow') ?? null,
+                animated: view?.renderer?.hasAttribute?.('animated') ?? false,
+                eink: view?.renderer?.hasAttribute?.('eink') ?? false,
+                turnSettle,
             },
             memory: summarizeRunMemory({
                 start: runStartHeap,

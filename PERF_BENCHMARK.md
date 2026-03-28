@@ -227,6 +227,46 @@ node scripts/run-phase0-benchmark.mjs \
   --turn-settle legacy
 ```
 
+### 指定阅读模式相关参数
+
+如果要做副作用验证，不要靠手工改页面。当前 runner 已支持几组常用验证参数：
+
+- `--animated`
+  - 打开分页动画
+- `--flow scrolled`
+  - 切到滚动模式
+- `--eink`
+  - 模拟关闭动画的墨水屏约束
+
+例如对比动画模式下的 `legacy` 与 `frame`：
+
+```bash
+node scripts/run-phase0-benchmark.mjs \
+  /absolute/path/to/book.epub \
+  --cases js \
+  --scenario continuous-reading \
+  --animated \
+  --turn-settle legacy
+
+node scripts/run-phase0-benchmark.mjs \
+  /absolute/path/to/book.epub \
+  --cases js \
+  --scenario continuous-reading \
+  --animated \
+  --turn-settle frame
+```
+
+例如看滚动模式是否也受影响：
+
+```bash
+node scripts/run-phase0-benchmark.mjs \
+  /absolute/path/to/book.epub \
+  --cases js \
+  --scenario continuous-reading \
+  --flow scrolled \
+  --turn-settle frame
+```
+
 ## 场景系统
 
 ### 命名场景
@@ -338,6 +378,9 @@ node scripts/run-phase0-benchmark.mjs \
 - `stable`
 - `stabilityFailures`
 - `turnSettle`
+- `flow`
+- `animated`
+- `eink`
 - `memory.medianPeakUsedJSHeapSize`
 - `memory.medianHeapDeltaUsedJSHeapSize`
 - `memory.medianPostDestroyDeltaUsedJSHeapSize`
