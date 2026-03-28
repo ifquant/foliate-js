@@ -1,6 +1,6 @@
-const pdfjsPath = path => `/vendor/pdfjs/${path}`
+const pdfjsPath = path => new URL(`./vendor/pdfjs/${path}`, import.meta.url).href
 
-import '@pdfjs/pdf.min.mjs'
+import './vendor/pdfjs/pdf.mjs'
 const pdfjsLib = globalThis.pdfjsLib
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsPath('pdf.worker.mjs')
 
