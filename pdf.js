@@ -1,8 +1,44 @@
-const pdfjsPath = path => new URL(`./vendor/pdfjs/${path}`, import.meta.url).href
+const bundledPdfjsBase = import.meta.url.replace(/\/pdf\.js(?:\?.*)?$/, '/vendor/pdfjs/')
+const bundledPdfjsPath = path => new URL(path, bundledPdfjsBase).href
 
-import './vendor/pdfjs/pdf.mjs'
-const pdfjsLib = globalThis.pdfjsLib
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsPath('pdf.worker.mjs')
+let pdfjsLib = null
+let pdfjsBasePath = '/vendor/pdfjs/'
+let pdfjsModuleFilename = 'pdf.mjs'
+let pdfjsWorkerFilename = 'pdf.worker.mjs'
+
+const getHostPdfjsBase = () =>
+    new URL('/vendor/pdfjs/', globalThis.location?.href ?? 'http://localhost/').href
+
+const pdfjsPath = path => new URL(path, pdfjsBasePath).href
+
+const ensurePdfJs = async () => {
+    if (pdfjsLib) return pdfjsLib
+    try {
+        const hostPdfjsBase = getHostPdfjsBase()
+        pdfjsModuleFilename = 'pdf.min.mjs'
+        pdfjsWorkerFilename = 'pdf.worker.min.mjs'
+        await import(/* @vite-ignore */ new URL(pdfjsModuleFilename, hostPdfjsBase).href)
+        pdfjsBasePath = hostPdfjsBase
+        globalThis.__pdfDebug = {
+            branch: 'host',
+            base: hostPdfjsBase,
+        }
+    } catch (error) {
+        pdfjsModuleFilename = 'pdf.mjs'
+        pdfjsWorkerFilename = 'pdf.worker.mjs'
+        await import(/* @vite-ignore */ bundledPdfjsPath('pdf.mjs'))
+        pdfjsBasePath = bundledPdfjsPath('')
+        globalThis.__pdfDebug = {
+            branch: 'bundled',
+            base: pdfjsBasePath,
+            hostError: error instanceof Error ? error.message : String(error),
+        }
+    }
+    pdfjsLib = globalThis.pdfjsLib
+    if (!pdfjsLib) throw new Error('pdfjsLib failed to initialize')
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsPath(pdfjsWorkerFilename)
+    return pdfjsLib
+}
 
 const fetchText = async url => await (await fetch(url)).text()
 
@@ -132,6 +168,7 @@ const setupPanningEvents = (doc) => {
 
 const render = async (page, doc, zoom, pageColors) => {
     if (!doc) return
+    const pdfjsLib = await ensurePdfJs()
 
     // Increment generation to invalidate any in-progress render for this doc
     const generation = (renderGenerations.get(doc) || 0) + 1
@@ -317,6 +354,7 @@ const makeTOCItem = async (item, pdf) => {
 const MAX_CACHED_PAGES = 8
 
 export const makePDF = async (file, options = {}) => {
+    const pdfjsLib = await ensurePdfJs()
     const { perf } = options
     const time = (name, fn, detail) =>
         perf?.tracker?.time?.(name, fn, detail) ?? fn()
