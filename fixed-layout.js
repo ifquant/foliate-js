@@ -235,7 +235,11 @@ export class FixedLayout extends HTMLElement {
             if (!iframe) return
             if (onZoom) {
                 const p = onZoom({ doc: frame.iframe.contentDocument, scale, pageColors: this.#pageColors })
-                if (p?.then) renderPromises.push(p)
+                if (p?.then) {
+                    // PDF zoom rebuilds the text layer, invalidating the Range
+                    // objects held by the current overlayer.
+                    renderPromises.push(p.then(() => this.#refreshOverlayerForFrame(frame)))
+                }
             }
             const iframeScale = onZoom ? scale : 1
             const zoomedOut = this.#scaleFactor < 1.0
@@ -1027,6 +1031,28 @@ export class FixedLayout extends HTMLElement {
         const idx = frame.iframe.dataset.sectionIndex != null
             ? parseInt(frame.iframe.dataset.sectionIndex) : undefined
         if (idx != null) this.#overlayers.delete(idx)
+    }
+    #refreshOverlayerForFrame(frame) {
+        if (!frame?.iframe || !frame.element?.parentNode
+            || frame.element.style.visibility === 'hidden') return
+        const index = frame.iframe.dataset.sectionIndex != null
+            ? parseInt(frame.iframe.dataset.sectionIndex) : undefined
+        if (index == null) return
+        const stale = this.#overlayers.get(index)
+        if (!stale) return
+        stale.element?.remove()
+        this.#overlayers.delete(index)
+        const doc = frame.iframe.contentDocument
+        if (!doc) return
+        this.dispatchEvent(new CustomEvent('create-overlayer', {
+            detail: {
+                doc, index,
+                attach: overlayer => {
+                    this.#overlayers.set(index, overlayer)
+                    frame.element.append(overlayer.element)
+                },
+            },
+        }))
     }
     async select(target) {
         await this.goTo(target)
