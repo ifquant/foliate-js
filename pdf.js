@@ -387,6 +387,10 @@ export const makePDF = async (file, options = {}) => {
         backend: perf?.backend,
     })
     book.toc = outline ? await Promise.all(outline.map(item => makeTOCItem(item, pdf))) : null
+    const labels = await pdf.getPageLabels().catch(() => null)
+    book.pageList = labels?.some((label, i) => label && label !== String(i + 1))
+        ? labels.map((label, i) => ({ label, href: JSON.stringify(i), index: i }))
+        : null
 
     const cache = new Map()
     const pageCache = new Map()
@@ -476,6 +480,7 @@ export const makePDF = async (file, options = {}) => {
     book.isExternal = uri => /^\w+:/i.test(uri)
     book.resolveHref = async href => {
         const parsed = JSON.parse(href)
+        if (typeof parsed === 'number') return { index: parsed }
         const dest = typeof parsed === 'string'
             ? await pdf.getDestination(parsed) : parsed
         const index = await pdf.getPageIndex(dest[0])
@@ -484,6 +489,7 @@ export const makePDF = async (file, options = {}) => {
     book.splitTOCHref = async href => {
         if (!href) return [null, null]
         const parsed = JSON.parse(href)
+        if (typeof parsed === 'number') return [parsed, null]
         const dest = typeof parsed === 'string'
             ? await pdf.getDestination(parsed) : parsed
         try {
