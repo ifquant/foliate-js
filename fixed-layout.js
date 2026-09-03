@@ -629,13 +629,10 @@ export class FixedLayout extends HTMLElement {
                         },
                     },
                 }))
-                // Forward wheel events to host when iframe has pointer-events
-                // (fallback for the brief window after scroll settles)
-                doc.addEventListener('wheel', e => {
-                    // Disable pointer-events immediately so subsequent
-                    // wheel ticks use native scroll
+                // The browser already chains wheel input from this non-scrolling
+                // iframe to the host; only stop it intercepting later ticks.
+                doc.addEventListener('wheel', () => {
                     this.#setScrollIframeInteraction(false)
-                    this.scrollBy({ top: e.deltaY, left: e.deltaX, behavior: 'instant' })
                 }, { passive: true })
             }
         } catch (e) {
