@@ -6,6 +6,20 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsPath('pdf.worker.mjs')
 
 const fetchText = async url => await (await fetch(url)).text()
 
+// WebView accessibility settings can enlarge text without scaling the PDF
+// canvas. Measure that OS-level factor so the transparent text layer can divide
+// it out and keep native selections aligned with the painted glyphs.
+const getFontScale = doc => {
+    const probe = doc.createElement('div')
+    probe.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;'
+        + 'font-size:100px;line-height:1;text-size-adjust:none;-webkit-text-size-adjust:none'
+    probe.textContent = 'x'
+    doc.body.append(probe)
+    const fontScale = probe.offsetHeight / 100
+    probe.remove()
+    return fontScale > 0 ? fontScale : 1
+}
+
 let textLayerBuilderCSS = null
 let annotationLayerBuilderCSS = null
 
@@ -212,6 +226,11 @@ const render = async (page, doc, zoom, pageColors) => {
 
     // Bail out if superseded after async text layer render
     if (renderGenerations.get(doc) !== generation) return
+
+    const fontScale = getFontScale(doc)
+    if (fontScale !== 1) container.style.setProperty('--text-scale-factor',
+        `calc(var(--total-scale-factor) * var(--min-font-size) / ${fontScale})`)
+    else container.style.removeProperty('--text-scale-factor')
 
     // hide "offscreen" canvases appended to document when rendering text layer
     // https://github.com/mozilla/pdf.js/blob/642b9a5ae67ef642b9a8808fd9efd447e8c350e2/web/pdf_viewer.css#L51-L58
