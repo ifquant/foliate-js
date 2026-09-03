@@ -31,6 +31,18 @@ const getViewport = (doc, viewport) => {
     return { width: 1000, height: 2000 }
 }
 
+// A portrait auto-spread shows only one page, so both inline margins must
+// center it. Landscape keeps each page against the shared spine.
+export const computeSpreadInlineMargins = portrait => portrait
+    ? {
+        left: { marginInlineStart: 'auto', marginInlineEnd: 'auto' },
+        right: { marginInlineStart: 'auto', marginInlineEnd: 'auto' },
+    }
+    : {
+        left: { marginInlineStart: 'auto', marginInlineEnd: '' },
+        right: { marginInlineStart: '', marginInlineEnd: 'auto' },
+    }
+
 export class FixedLayout extends HTMLElement {
     static observedAttributes = ['zoom', 'scale-factor', 'spread', 'flow']
     #root = this.attachShadow({ mode: 'open' })
@@ -356,8 +368,9 @@ export class FixedLayout extends HTMLElement {
             this.#isOverflowX = width > containerWidth
             this.#isOverflowY = height > containerHeight
         } else {
-            const leftDimensions = transform({frame: left, styles: { marginInlineStart: 'auto' }})
-            const rightDimensions = transform({frame: right, styles: { marginInlineEnd: 'auto' }})
+            const margins = computeSpreadInlineMargins(portrait)
+            const leftDimensions = transform({frame: left, styles: margins.left})
+            const rightDimensions = transform({frame: right, styles: margins.right})
             if (!leftDimensions || !rightDimensions) return renderPromises
             const {width: leftWidth, height: leftHeight, containerWidth, containerHeight} = leftDimensions
             const {width: rightWidth, height: rightHeight} = rightDimensions
