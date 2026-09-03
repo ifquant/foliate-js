@@ -158,6 +158,10 @@ const render = async (page, doc, zoom, pageColors) => {
     const canvas = document.createElement('canvas')
     canvas.height = viewport.height
     canvas.width = viewport.width
+    // Bitmap dimensions are integers; keep the fractional DPR viewport in CSS
+    // so the transformed canvas still fills its logical PDF page box.
+    canvas.style.width = `${viewport.width}px`
+    canvas.style.height = `${viewport.height}px`
     const canvasContext = canvas.getContext('2d')
     const renderTask = page.render({ canvasContext, viewport, pageColors })
     activeRenderTasks.set(doc, renderTask)
