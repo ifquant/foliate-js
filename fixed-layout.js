@@ -69,6 +69,35 @@ export class FixedLayout extends HTMLElement {
     #scrollMaxLoaded = 8
     #scrollIdleTimer = null
     #scrollCurrentIndex = -1
+    // Page dimensions can change after loading or zooming. Preserve the
+    // reader's position within the page instead of snapping to its top edge.
+    #captureScrollModeAnchor() {
+        const scrollTop = this.scrollTop
+        const fallbackIndex = this.#scrollCurrentIndex >= 0
+            ? this.#scrollCurrentIndex : this.#getScrollIndex()
+        const fallback = this.#scrollPages.find(page => page.index === fallbackIndex)
+        const page = this.#scrollPages.find(page => page.el.offsetHeight > 0
+            && scrollTop >= page.el.offsetTop
+            && scrollTop < page.el.offsetTop + page.el.offsetHeight)
+            ?? fallback
+        if (!page?.el.offsetHeight) return null
+        return {
+            index: page.index,
+            fraction: Math.min(1, Math.max(0,
+                (scrollTop - page.el.offsetTop) / page.el.offsetHeight)),
+            scrollTop,
+        }
+    }
+    #restoreScrollModeAnchor(anchor) {
+        if (!anchor) return
+        const page = this.#scrollPages.find(candidate => candidate.index === anchor.index)
+        const maxScrollTop = Math.max(0, this.scrollHeight - this.clientHeight)
+        const scrollTop = page?.el.offsetHeight
+            ? page.el.offsetTop + page.el.offsetHeight * anchor.fraction
+            : anchor.scrollTop
+        this.scrollTop = Math.min(maxScrollTop, Math.max(0, scrollTop))
+        this.#scrollCurrentIndex = anchor.index
+    }
     constructor() {
         super()
 
@@ -579,12 +608,14 @@ export class FixedLayout extends HTMLElement {
 
             pageData.frame = frame
             pageData.state = 'loaded'
+            const scrollAnchor = this.#captureScrollModeAnchor()
             // Update dimensions from actual page viewport
             if (frame.width && frame.height) {
                 pageData.vpWidth = frame.width
                 pageData.vpHeight = frame.height
             }
             this.#renderScrollPage(pageData)
+            this.#restoreScrollModeAnchor(scrollAnchor)
 
             // Create overlayer
             const doc = frame.iframe.contentDocument
@@ -640,8 +671,7 @@ export class FixedLayout extends HTMLElement {
     #renderScrollMode() {
         const { width: hostWidth } = this.getBoundingClientRect()
         if (!hostWidth) return
-        // Remember current page so we can restore scroll position after resize
-        const currentIndex = this.#getScrollIndex()
+        const scrollAnchor = this.#captureScrollModeAnchor()
         for (const page of this.#scrollPages) {
             const scale = (hostWidth / page.vpWidth) * this.#scaleFactor
             page.el.style.width = `${page.vpWidth * scale}px`
@@ -650,11 +680,7 @@ export class FixedLayout extends HTMLElement {
                 this.#renderScrollPage(page)
             }
         }
-        // Restore scroll position to keep current page in view after resize
-        if (currentIndex >= 0 && currentIndex < this.#scrollPages.length) {
-            this.#scrollPages[currentIndex].el.scrollIntoView()
-            this.#scrollCurrentIndex = currentIndex
-        }
+        this.#restoreScrollModeAnchor(scrollAnchor)
     }
     #renderScrollPage(pageData) {
         const { width: hostWidth } = this.getBoundingClientRect()
