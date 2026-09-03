@@ -69,6 +69,9 @@ export class FixedLayout extends HTMLElement {
     #scrollMaxLoaded = 8
     #scrollIdleTimer = null
     #scrollCurrentIndex = -1
+    #scrolling = false
+    #pinching = false
+    #pinchAnchor = null
     // Page dimensions can change after loading or zooming. Preserve the
     // reader's position within the page instead of snapping to its top edge.
     #captureScrollModeAnchor() {
@@ -98,6 +101,25 @@ export class FixedLayout extends HTMLElement {
         this.scrollTop = Math.min(maxScrollTop, Math.max(0, scrollTop))
         this.#scrollCurrentIndex = anchor.index
     }
+    #captureCenterPageRect() {
+        const centerY = this.getBoundingClientRect().top + this.clientHeight / 2
+        const page = this.#scrollPages.find(({ el }) => {
+            const rect = el.getBoundingClientRect()
+            return rect.top <= centerY && rect.bottom > centerY
+        })
+        if (!page) return null
+        const rect = page.el.getBoundingClientRect()
+        return { index: page.index, top: rect.top, left: rect.left }
+    }
+    #restorePinchAnchor(anchor) {
+        const page = this.#scrollPages.find(candidate => candidate.index === anchor.index)
+        if (!page) return
+        const rect = page.el.getBoundingClientRect()
+        const maxTop = Math.max(0, this.scrollHeight - this.clientHeight)
+        const maxLeft = Math.max(0, this.scrollWidth - this.clientWidth)
+        this.scrollTop = Math.min(maxTop, Math.max(0, this.scrollTop + rect.top - anchor.top))
+        this.scrollLeft = Math.min(maxLeft, Math.max(0, this.scrollLeft + rect.left - anchor.left))
+    }
     constructor() {
         super()
 
@@ -119,13 +141,16 @@ export class FixedLayout extends HTMLElement {
         :host([flow="scrolled"]) {
             display: block;
             overflow-y: auto;
-            overflow-x: hidden;
+            overflow-x: auto;
+            touch-action: pan-x pan-y;
         }
         :host([flow="scrolled"]) .scroll-container {
             display: flex;
             flex-direction: column;
             align-items: center;
             min-height: 100%;
+            width: max-content;
+            min-width: 100%;
             background-color: var(--scroll-bg-color);
             background-opacity: var(--scroll-bg-opacity);
         }
@@ -133,7 +158,8 @@ export class FixedLayout extends HTMLElement {
             position: relative;
             flex-shrink: 0;
             overflow: hidden;
-            margin: 4px 0;
+            margin: calc(4px * var(--scroll-zoom, 1)) 0;
+            touch-action: pan-x pan-y;
         }
         :host([flow="scrolled"]) .scroll-page iframe {
             pointer-events: none;
@@ -466,15 +492,20 @@ export class FixedLayout extends HTMLElement {
             this.#evictScrollPages()
         }, { root: this, rootMargin: '50% 0px' })
 
-        for (const page of this.#scrollPages) {
-            this.#scrollObserver.observe(page.el)
-        }
+        this.#observeScrollPages()
+    }
+    #observeScrollPages() {
+        if (!this.#scrollObserver) return
+        for (const page of this.#scrollPages) this.#scrollObserver.observe(page.el)
     }
     #handleScrollEvent = () => {
-        // Disable iframe interaction during scroll for native smooth scrolling
+        // Keep page content interactive while idle, but let the host own an
+        // active native scroll without iframe pointer handlers competing.
+        this.#scrolling = true
         this.#setScrollIframeInteraction(false)
         if (this.#scrollIdleTimer) clearTimeout(this.#scrollIdleTimer)
         this.#scrollIdleTimer = setTimeout(() => {
+            this.#scrolling = false
             this.#setScrollIframeInteraction(true)
             // Report location only after scroll settles to avoid
             // expensive React re-renders on every frame
@@ -511,6 +542,9 @@ export class FixedLayout extends HTMLElement {
         this.#scrollPages = []
         this.#scrollLoadGen.clear()
         this.#scrollCurrentIndex = -1
+        this.#scrolling = false
+        this.#pinching = false
+        this.#pinchAnchor = null
         if (this.#scrollContainer) {
             this.#scrollContainer.remove()
             this.#scrollContainer = null
@@ -617,6 +651,10 @@ export class FixedLayout extends HTMLElement {
             this.#renderScrollPage(pageData)
             this.#restoreScrollModeAnchor(scrollAnchor)
 
+            if (!this.#scrolling && !this.#pinching) {
+                frame.iframe.style.pointerEvents = 'auto'
+            }
+
             // Create overlayer
             const doc = frame.iframe.contentDocument
             if (doc) {
@@ -668,7 +706,9 @@ export class FixedLayout extends HTMLElement {
     #renderScrollMode() {
         const { width: hostWidth } = this.getBoundingClientRect()
         if (!hostWidth) return
-        const scrollAnchor = this.#captureScrollModeAnchor()
+        this.style.setProperty('--scroll-zoom', String(this.#scaleFactor))
+        const pinchAnchor = this.#pinchAnchor
+        const scrollAnchor = pinchAnchor ? null : this.#captureScrollModeAnchor()
         for (const page of this.#scrollPages) {
             const scale = (hostWidth / page.vpWidth) * this.#scaleFactor
             page.el.style.width = `${page.vpWidth * scale}px`
@@ -677,7 +717,12 @@ export class FixedLayout extends HTMLElement {
                 this.#renderScrollPage(page)
             }
         }
-        this.#restoreScrollModeAnchor(scrollAnchor)
+        if (pinchAnchor) {
+            this.#restorePinchAnchor(pinchAnchor)
+            this.#pinchAnchor = null
+        } else {
+            this.#restoreScrollModeAnchor(scrollAnchor)
+        }
     }
     #renderScrollPage(pageData) {
         const { width: hostWidth } = this.getBoundingClientRect()
@@ -1173,6 +1218,17 @@ export class FixedLayout extends HTMLElement {
             })
     }
     pinchZoom(ratio) {
+        if (this.#scrollMode) {
+            if (!this.#scrollContainer) return
+            if (!this.#pinching) {
+                this.#pinching = true
+                this.#scrollObserver?.disconnect()
+            }
+            this.#scrollContainer.style.transformOrigin =
+                `${this.scrollLeft + this.clientWidth / 2}px ${this.scrollTop + this.clientHeight / 2}px`
+            this.#scrollContainer.style.transform = `scale(${ratio})`
+            return
+        }
         const frames = this.#center
             ? [this.#center]
             : [this.#left, this.#right]
@@ -1182,7 +1238,19 @@ export class FixedLayout extends HTMLElement {
             frame.element.style.transformOrigin = 'center'
         }
     }
-    pinchEnd() {
+    pinchEnd(commit = true) {
+        if (this.#scrollMode) {
+            this.#pinching = false
+            if (this.#scrollContainer) {
+                // A cancelled gesture has no scale re-render to consume an
+                // anchor, so clear it instead of moving a later render.
+                this.#pinchAnchor = commit ? this.#captureCenterPageRect() : null
+                this.#scrollContainer.style.removeProperty('transform')
+                this.#scrollContainer.style.removeProperty('transform-origin')
+            }
+            this.#observeScrollPages()
+            return
+        }
         for (const frame of [this.#center, this.#left, this.#right]) {
             if (!frame?.element) continue
             frame.element.style.removeProperty('transform')
