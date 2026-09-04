@@ -92,16 +92,23 @@ const childGetter = (doc, ns) => {
     }
 }
 
-const resolveURL = (url, relativeTo) => {
+const decodeURIPath = path => {
     try {
-        // replace %2c in the url with a comma, this might be introduced by calibre
-        url = url.replace(/%2c/gi, ',').replace(/%3a/gi, ':')
-        if (relativeTo.includes(':') && !relativeTo.startsWith('OEBPS')) return new URL(url, relativeTo)
+        return decodeURIComponent(path.replace(/%(2f|23)/gi, '%25$1'))
+    } catch {
+        return path
+    }
+}
+
+const resolveURL = (url, relativeTo) => {
+    if (typeof url !== 'string') return url
+    try {
+        if (isExternal(relativeTo)) return new URL(url, relativeTo)
         // the base needs to be a valid URL, so set a base URL and then remove it
         const root = 'https://invalid.invalid/'
         const obj = new URL(url, root + relativeTo)
         obj.search = ''
-        return decodeURI(obj.href.replace(root, ''))
+        return decodeURIPath(obj.href.replace(root, ''))
     } catch(e) {
         console.warn(e)
         return url
@@ -411,8 +418,16 @@ const getImageMediaType = (path) => {
         'png': 'image/png',
         'gif': 'image/gif',
         'webp': 'image/webp',
+        'svg': 'image/svg+xml',
     }
     return mediaTypeMap[extension] || 'image/jpeg'
+}
+
+const UNDECLARED_COVER_RE = /(?:cover|couv)\.(?:jpe?g|png|gif|webp|svg)$/i
+
+const findUndeclaredCover = names => {
+    for (const name of names) if (UNDECLARED_COVER_RE.test(name)) return name
+    return null
 }
 
 const getFontMediaType = (path) => {
@@ -680,6 +695,7 @@ class Resources {
                 item.properties = item.properties?.split(/\s/)
                 return item
             })
+            .filter(item => item.href)
         this.manifestById = new Map(this.manifest.map(item => [item.id, item]))
         this.spine = $$itemref
             .map(getAttributes('idref', 'id', 'linear', 'properties'))
@@ -707,7 +723,7 @@ class Resources {
                 ?.getAttribute('content'))
             ?? this.manifest.find(item => item.id === 'cover'
                 && item.mediaType.startsWith('image'))
-            ?? this.manifest.find(item => item.href.includes('cover')
+            ?? this.manifest.find(item => item.href?.includes('cover')
                 && item.mediaType.startsWith('image'))
             ?? this.getItemByHref(this.guide
                 ?.find(ref => ref.type.includes('cover'))?.href)
@@ -1082,9 +1098,10 @@ export class EPUB {
             'bull': '&#8226;',
             'middot': '&#183;',
         }
-        return str.replace(/&([a-z]+);/gi, (match, entity) => {
-            return entityMap[entity.toLowerCase()] || match
-        })
+        return str
+            .replace(/&([a-z]+);/gi, (match, entity) =>
+                entityMap[entity.toLowerCase()] || match)
+            .replace(/&(?!#\d+;|#x[0-9a-f]+;|[a-z][a-z0-9]*;)/gi, '&amp;')
     }
     async #loadXML(uri) {
         const backend = this.#perf?.backend
@@ -1143,7 +1160,7 @@ ${doc.querySelector('parsererror').innerText}`)
             this.resources.spine.map((spineItem, index) => {
             const { idref, linear, properties = [] } = spineItem
             const item = this.resources.getItemByID(idref)
-            if (!item) {
+            if (!item?.href) {
                 console.warn(`Could not find item with ID "${idref}" in manifest`)
                 return null
             }
@@ -1446,9 +1463,12 @@ ${doc.querySelector('parsererror').innerText}`)
     }
     async getCover() {
         const cover = this.resources?.cover
-        return cover?.href
-            ? new Blob([await this.loadBlob(cover.href)], { type: cover.mediaType })
-            : null
+        if (cover?.href) return new Blob([await this.loadBlob(cover.href)],
+            { type: cover.mediaType })
+        const href = findUndeclaredCover(this.entries.keys())
+        if (!href) return null
+        const blob = await this.loadBlob(href)
+        return blob ? new Blob([blob], { type: getImageMediaType(href) }) : null
     }
     async getCalibreBookmarks() {
         const txt = await this.loadText('META-INF/calibre_bookmarks.txt')
