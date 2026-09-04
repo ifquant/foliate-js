@@ -643,6 +643,10 @@ export class MOBI extends PDB {
 
 const mbpPagebreakRegex = /<\s*(?:mbp:)?pagebreak[^>]*>/gi
 const fileposRegex = /<[^<>]+filepos=['"]{0,1}(\d+)[^<>]*>/gi
+const selfClosingRegex = /<(a|div|span|p)\s*\/>/gi
+
+export const normalizeMobi6Markup = str =>
+    str.replace(selfClosingRegex, '<$1></$1>')
 
 const getIndent = el => {
     let x = 0
@@ -842,7 +846,7 @@ class MOBI6 {
     }
     async createDocument(section) {
         const str = await this.loadText(section)
-        return this.parser.parseFromString(str, this.#type)
+        return this.parser.parseFromString(normalizeMobi6Markup(str), this.#type)
     }
     async loadSection(section) {
         if (this.#cache.has(section)) return this.#cache.get(section)
@@ -950,6 +954,7 @@ class KF8 {
     #rawTail = new Uint8Array()
     #lastLoadedHead = -1
     #lastLoadedTail = -1
+    #rawQueue = Promise.resolve()
     #type = MIME.XHTML
     #inlineMap = new Map()
     constructor(mobi) {
@@ -1113,7 +1118,12 @@ class KF8 {
     // NOTE: there doesn't seem to be a way to access text randomly?
     // how to know the decompressed size of the records without decompressing?
     // 4096 is just the maximum size
-    async loadRaw(start, end) {
+    loadRaw(start, end) {
+        const result = this.#rawQueue.then(() => this.#loadRawLocked(start, end))
+        this.#rawQueue = result.then(() => {}, () => {})
+        return result
+    }
+    async #loadRawLocked(start, end) {
         // here we load either from the front or back until we have reached the
         // required offsets; at worst you'd have to load half the book at once
         const distanceHead = end - this.#rawHead.length
