@@ -9,7 +9,7 @@ const NOTE_PREFIX = 'foliate-note:'
 
 const isZip = async file => {
     const arr = new Uint8Array(await file.slice(0, 4).arrayBuffer())
-    return arr[0] === 0x50 && arr[1] === 0x4b && arr[2] === 0x03 && arr[3] === 0x04
+    return arr[0] === 0x50 && arr[1] === 0x4b && arr[2] === 0x03
 }
 
 const isPDF = async file => {
@@ -33,14 +33,30 @@ const makeZipLoader = async file => {
     const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
         await import('./vendor/zip.js')
     configure({ useWebWorkers: false })
+    const signature = new Uint8Array(await file.slice(0, 4).arrayBuffer())
+    if (signature[3] !== 0x04) file = new Blob([
+        file.slice(0, 3), new Uint8Array([0x04]), file.slice(4),
+    ], { type: file.type })
     const reader = new ZipReader(new BlobReader(file))
     const entries = await reader.getEntries()
     const map = new Map(entries.map(entry => [entry.filename, entry]))
-    const load = f => (name, ...args) =>
-        map.has(name) ? f(map.get(name), ...args) : null
+    const foldedMap = new Map()
+    for (const entry of entries) {
+        const name = entry.filename.toLowerCase()
+        foldedMap.set(name, foldedMap.has(name) ? null : entry)
+    }
+    // EPUB paths are case-sensitive in principle, but malformed books often are
+    // not. Keep exact names authoritative and reject ambiguous folded matches.
+    const getEntry = name => typeof name === 'string'
+        ? map.get(name) ?? foldedMap.get(name.toLowerCase()) ?? null
+        : null
+    const load = f => (name, ...args) => {
+        const entry = getEntry(name)
+        return entry ? f(entry, ...args) : null
+    }
     const loadText = load(entry => entry.getData(new TextWriter()))
     const loadBlob = load((entry, type) => entry.getData(new BlobWriter(type)))
-    const getSize = name => map.get(name)?.uncompressedSize ?? 0
+    const getSize = name => getEntry(name)?.uncompressedSize ?? 0
     return { entries, loadText, loadBlob, getSize }
 }
 
