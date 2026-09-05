@@ -2,6 +2,18 @@
 
 ## Direction Ownership
 
+### Complete C11B horizontal drag and animation cancellation
+
+**What:** After C11A's instant direction/coordinate work, implement horizontal
+drag-follow, commit/settle and two-phase presentation for animated vertical books.
+
+**Boundary:** Preserve the local animation duration and background owner. Cancel
+old timers, touch-end rAF and navigation completion tails on replacement,
+layout/flow invalidation, touchcancel and destroy. A generation counter only in
+the animation helper does not protect later navigation or event callbacks.
+Settle cancelled promises without allowing an old operation to mutate new state.
+Do not treat this as full pending-open cancellation or navigation rollback.
+
 ### Keep adjacent chapter layout from replacing the primary direction
 
 **What:** Audit mixed LTR/RTL and horizontal/vertical chapter transitions before

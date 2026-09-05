@@ -226,19 +226,20 @@ const setSelectionTo = (target, collapse) => {
 
 const getDirection = doc => {
     const { defaultView } = doc
-    const { writingMode, direction } = defaultView.getComputedStyle(doc.body)
-    let vertical = writingMode === 'vertical-rl'
-        || writingMode === 'vertical-lr'
+    let { writingMode, direction } = defaultView.getComputedStyle(doc.body)
     // Some books put writing-mode on their content wrapper. Ignore injected
     // CFI-inert siblings, but do not promote deeper or later vertical fragments.
     if (!writingMode || writingMode === 'horizontal-tb') {
         const child = doc.body.querySelector(':scope > :not([cfi-inert])')
         if (child) {
             const childMode = defaultView.getComputedStyle(child).writingMode
-            vertical = childMode === 'vertical-rl' || childMode === 'vertical-lr'
+            if (childMode === 'vertical-rl' || childMode === 'vertical-lr')
+                writingMode = childMode
         }
     }
-    const rtl = doc.body.dir === 'rtl'
+    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr'
+    // Page progression follows the columns even when text direction is LTR.
+    const rtl = writingMode === 'vertical-rl' || doc.body.dir === 'rtl'
         || direction === 'rtl'
         || doc.documentElement.dir === 'rtl'
     return { vertical, rtl }
@@ -1325,7 +1326,8 @@ export class Paginator extends HTMLElement {
         const columnWidth = vertical
             ? (size / divisor - marginTop * 1.5 - marginBottom * 1.5)
             : (size / divisor - gap - marginRight / 2 - marginLeft / 2)
-        this.setAttribute('dir', rtl ? 'rtl' : 'ltr')
+        // Vertical pagination uses positive scrollTop, not RTL scrollLeft.
+        this.setAttribute('dir', rtl && !vertical ? 'rtl' : 'ltr')
 
         // set background to `doc` background
         // this is needed because the iframe does not fill the whole element
@@ -1468,9 +1470,10 @@ export class Paginator extends HTMLElement {
     }
 
     scrollBy(dx, dy) {
+        if (!this.#scrollBounds) return
         const delta = this.#vertical ? dy : dx
         const [offset, a, b] = this.#scrollBounds
-        const rtl = this.#rtl
+        const rtl = this.#rtl && !this.#vertical
         const min = rtl ? offset - b : offset - a
         const max = rtl ? offset + a : offset + b
         this.containerPosition = Math.max(min, Math.min(max,
@@ -1481,10 +1484,16 @@ export class Paginator extends HTMLElement {
     // dx, dy: total distance swiped
     // dt: total time of the swipe (ms)
     snap(vx, vy, dx, dy, dt) {
-        const velocity = this.#vertical ? vy : vx
-        const avgVelocity = this.#vertical ? dy / dt : dx / dt
+        if (this.scrolled || !this.#scrollBounds) return
         const horizontal = Math.abs(vx) * 2 > Math.abs(vy)
-        const orthogonal = this.#vertical ? !horizontal : horizontal
+        // Instant vertical turns accept the horizontal reading direction.
+        // Animated vertical drag-follow is a separate slice; keep its old axis.
+        const instantVertical = this.#vertical
+            && (!this.hasAttribute('animated') || this.hasAttribute('eink'))
+        const useHorizontal = !this.#vertical || (instantVertical && horizontal)
+        const velocity = useHorizontal ? vx : vy
+        const avgVelocity = useHorizontal ? dx / dt : dy / dt
+        const orthogonal = useHorizontal ? horizontal : !horizontal
         const [offset, a, b] = this.#scrollBounds
         const size = this.size
         const start = this.#renderedStart
@@ -1494,7 +1503,7 @@ export class Paginator extends HTMLElement {
         const max = Math.abs(offset) + b
         const snapping = this.hasAttribute('animated') && !this.hasAttribute('eink')
         const v =  snapping ? velocity : avgVelocity
-        const d = v * (this.#rtl ? -size : size) * (orthogonal ? 1 : 0)
+        const d = v * (useHorizontal && this.#rtl ? -size : size) * (orthogonal ? 1 : 0)
         const snapOffset = (isNaN(d) ? 0 : snapping ? d * 2 : d * 10)
         const page = Math.floor(Math.max(min, Math.min(max, (start + end) / 2 + snapOffset)) / size)
         this.#scrollToPage(page, 'snap').then(() => {
@@ -1594,6 +1603,8 @@ export class Paginator extends HTMLElement {
                     ({ left: size - right - marginTop, right: size - left - marginBottom })
                 : ({ top, bottom }) => ({ left: top - marginTop, right: bottom - marginBottom })
         }
+        // Column fragmentation is vertical regardless of the reading direction.
+        if (this.#vertical) return ({ top, bottom }) => ({ left: top, right: bottom })
         if (this.#rtl) {
             // Rectangles are iframe-local. The wrapper also contains blank-page
             // padding, which callers account for separately from this mirror.
@@ -1606,9 +1617,7 @@ export class Paginator extends HTMLElement {
             return ({ left, right }) =>
                 ({ left: viewSize - right, right: viewSize - left })
         }
-        return this.#vertical
-            ? ({ top, bottom }) => ({ left: top, right: bottom })
-            : f => f
+        return f => f
     }
     async #scrollToRect(rect, reason) {
         if (this.scrolled) {
@@ -1664,7 +1673,7 @@ export class Paginator extends HTMLElement {
         }
     }
     async #scrollToPage(page, reason, smooth) {
-        const offset = this.size * (this.#rtl ? -page : page)
+        const offset = this.size * (this.#rtl && !this.#vertical ? -page : page)
         return this.#scrollTo(offset, reason, smooth)
     }
     async scrollToAnchor(anchor, select, smooth) {
