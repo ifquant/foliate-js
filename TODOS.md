@@ -1,5 +1,21 @@
 # TODOS
 
+## Direction Ownership
+
+### Keep adjacent chapter layout from replacing the primary direction
+
+**What:** Audit mixed LTR/RTL and horizontal/vertical chapter transitions before
+claiming mixed-direction rendering support.
+
+**Why:** `#loadAdjacentSection` uses the shared `#beforeRender` callback, which
+overwrites paginator `#rtl`/`#vertical` and container layout for a non-primary
+chapter. The three C10 upstream patches do not change that ownership.
+
+**Context:** C10 acceptance is limited to same-direction reflowable books,
+including mismatched book metadata. Host current-document selection is a
+separate guarantee. Freeze primary/preload direction ownership before fixing
+this lifecycle issue; C11's vertical gesture redesign does not close it.
+
 ## Resource Ownership
 
 ### Audit fixed-layout section cache disposal

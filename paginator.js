@@ -227,8 +227,17 @@ const setSelectionTo = (target, collapse) => {
 const getDirection = doc => {
     const { defaultView } = doc
     const { writingMode, direction } = defaultView.getComputedStyle(doc.body)
-    const vertical = writingMode === 'vertical-rl'
+    let vertical = writingMode === 'vertical-rl'
         || writingMode === 'vertical-lr'
+    // Some books put writing-mode on their content wrapper. Ignore injected
+    // CFI-inert siblings, but do not promote deeper or later vertical fragments.
+    if (!writingMode || writingMode === 'horizontal-tb') {
+        const child = doc.body.querySelector(':scope > :not([cfi-inert])')
+        if (child) {
+            const childMode = defaultView.getComputedStyle(child).writingMode
+            vertical = childMode === 'vertical-rl' || childMode === 'vertical-lr'
+        }
+    }
     const rtl = doc.body.dir === 'rtl'
         || direction === 'rtl'
         || doc.documentElement.dir === 'rtl'
@@ -899,9 +908,6 @@ export class Paginator extends HTMLElement {
             perspective: 1000px;
             -webkit-perspective: 1000px;
             transition: opacity 50ms ease-in;
-        }
-        :host([dir="rtl"]) #container {
-            flex-direction: row-reverse;
         }
         #container.vertical {
             flex-direction: column;
@@ -1588,13 +1594,21 @@ export class Paginator extends HTMLElement {
                     ({ left: size - right - marginTop, right: size - left - marginBottom })
                 : ({ top, bottom }) => ({ left: top - marginTop, right: bottom - marginBottom })
         }
-        const pxSize = this.#renderedPages * this.size
-        return this.#rtl
-            ? ({ left, right }) =>
-                ({ left: pxSize - right, right: pxSize - left })
-            : this.#vertical
-                ? ({ top, bottom }) => ({ left: top, right: bottom })
-                : f => f
+        if (this.#rtl) {
+            // Rectangles are iframe-local. The wrapper also contains blank-page
+            // padding, which callers account for separately from this mirror.
+            // Measure the rendered iframe, not neighboring views or layout estimates.
+            const targetView = view ?? this.#primaryView
+            const viewSize = targetView
+                ? targetView.document.defaultView.frameElement
+                    .getBoundingClientRect()[this.sideProp]
+                : this.#renderedViewSize
+            return ({ left, right }) =>
+                ({ left: viewSize - right, right: viewSize - left })
+        }
+        return this.#vertical
+            ? ({ top, bottom }) => ({ left: top, right: bottom })
+            : f => f
     }
     async #scrollToRect(rect, reason) {
         if (this.scrolled) {
