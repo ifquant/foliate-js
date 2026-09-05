@@ -1170,6 +1170,8 @@ export class Paginator extends HTMLElement {
         view.destroy()
         this.#container.removeChild(view.element)
         this.#views.delete(index)
+        // Retiring a view releases its section once. A replacement's load
+        // callback must not release it again under another live reader.
         this.sections[index]?.unload?.()
     }
     #destroyAllViews() {
@@ -2092,10 +2094,7 @@ export class Paginator extends HTMLElement {
                 }
             }
             this.#clearViewsExcept(keep)
-            const oldIndex = this.#primaryIndex
             const onLoad = detail => {
-                if (oldIndex >= 0 && !this.#views.has(oldIndex))
-                    this.sections[oldIndex]?.unload?.()
                 this.setStyles(this.#styles)
                 this.dispatchEvent(new CustomEvent('load', { detail }))
             }

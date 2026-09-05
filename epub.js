@@ -801,6 +801,12 @@ class Loader {
         return url
     }
     ref(href, parent) {
+        // Each renderer's top-level load owns a reference. Only dependencies
+        // within one parent are deduplicated; absent parents are not an owner.
+        if (!parent) {
+            this.#refCount.set(href, this.#refCount.get(href) + 1)
+            return this.#cache.get(href)
+        }
         const childList = this.#children.get(parent)
         if (!childList?.includes(href)) {
             this.#refCount.set(href, this.#refCount.get(href) + 1)
@@ -857,7 +863,9 @@ class Loader {
     async loadItemXHTMLContent(item, parents = []) {
         const backend = this.#perf?.backend
         return this.#time('epub:section:loadContent', async () => {
-            const url = await this.loadItem(item, parents)
+            // The renderer already acquired the section with load(). Reading
+            // its content must not acquire another reference it cannot release.
+            const url = this.#cache.get(item?.href) ?? await this.loadItem(item, parents)
             if (url) return this.#cacheXHTMLContent.get(url)?.data
         }, { backend, href: item?.href, depth: parents.length })
     }

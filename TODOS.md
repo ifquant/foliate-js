@@ -1,5 +1,38 @@
 # TODOS
 
+## Resource Ownership
+
+### Audit fixed-layout section cache disposal
+
+**What:** Trace settled spread/scroll cache eviction and final section release in
+`fixed-layout.js` before claiming fixed-layout resource-lifetime parity.
+
+**Why:** Its spread and scroll loaders acquire sections, but current teardown
+does not pair them with section unload calls. The C9 EPUB loader fix counts
+holders correctly; it does not supply a missing renderer cache/disposal policy.
+
+**Context:** Keep this separate from paginator holder-survival/final-release
+proof and from cancellation of unfinished loads. Audit both layout modes and
+shared-book ownership before changing release points; a blanket book destroy
+could invalidate another live view. The br1 fixed-layout alignment line must
+not infer release correctness from its reflowable C9 tests.
+
+## Navigation Failures
+
+### Preserve the prior display when a destination section fails to load
+
+**What:** Audit transactional destination admission in the paginator separately
+from C9 resource-reference accounting.
+
+**Why:** The existing far-navigation path clears old views before loading the
+destination. Its catch returns an empty display result, so a rejected destination
+can leave that navigating view without its prior display/state.
+
+**Context:** This path predates the C9 port. C9 must keep another live holder's
+resources valid and release references correctly even on failure; it does not
+claim to retain or restore the failing view's display, history or position.
+Do not conflate this with cancellation of an unfinished book open.
+
 ## Performance
 
 ### Re-evaluate DOM parsing ceiling after Phase 1 and Phase 2
